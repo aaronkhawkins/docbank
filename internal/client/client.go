@@ -828,6 +828,86 @@ func (c *Client) Search(ctx context.Context, query string, limit int) (api.Searc
 	return c.SearchWithOptions(ctx, query, limit, SearchOptions{})
 }
 
+// SearchEvidence returns an explicitly lexical result set whose hits carry
+// immutable evidence identities suitable for agent citations.
+func (c *Client) SearchEvidence(
+	ctx context.Context, query string, limit int,
+) (api.EvidenceSearchReport, error) {
+	var report api.EvidenceSearchReport
+	if strings.TrimSpace(query) == "" {
+		return report, errors.New("evidence search query must not be empty")
+	}
+	if limit < 1 || limit > 100 {
+		return report, errors.New("evidence search limit must be between 1 and 100")
+	}
+	path := "/api/v1/evidence/search?q=" + url.QueryEscape(query) + "&limit=" + strconv.Itoa(limit)
+	if err := c.do(ctx, http.MethodGet, path, nil, nil, &report); err != nil {
+		return api.EvidenceSearchReport{}, err
+	}
+	if report.Mode != "lexical" || report.Limit != limit || len(report.Hits) > limit {
+		return api.EvidenceSearchReport{}, errors.New("evidence search response has inconsistent authority")
+	}
+	for _, hit := range report.Hits {
+		if hit.Node.ID < 1 || !validUUIDv4(hit.Node.CurrentVersionID) ||
+			!strings.HasPrefix(hit.Path, "/") || hit.Excerpt == "" {
+			return api.EvidenceSearchReport{}, errors.New("evidence search response has invalid hit authority")
+		}
+		switch hit.EvidenceKind {
+		case "node_name":
+			if hit.Match != "name" || hit.BuildID != "" || hit.SegmentID != "" || hit.BlobHash != "" {
+				return api.EvidenceSearchReport{}, errors.New("evidence search response has invalid name authority")
+			}
+		case "content_blob":
+			if hit.Match != "content" || !validSHA256Hex(hit.BlobHash) ||
+				hit.BlobHash != hit.Node.BlobHash || hit.BuildID != "" || hit.SegmentID != "" {
+				return api.EvidenceSearchReport{}, errors.New("evidence search response has invalid blob authority")
+			}
+		case "rendition_segment":
+			if hit.Match != "content" || !validSHA256Hex(hit.BuildID) ||
+				hit.SegmentID == "" || hit.BlobHash != "" {
+				return api.EvidenceSearchReport{}, errors.New("evidence search response has invalid rendition authority")
+			}
+		default:
+			return api.EvidenceSearchReport{}, errors.New("evidence search response has unknown evidence authority")
+		}
+	}
+	return report, nil
+}
+
+// RenditionText returns one bounded page of normalized text from an immutable
+// evidence build.
+func (c *Client) RenditionText(
+	ctx context.Context, buildID string, limit, offset int,
+) (api.RenditionTextPage, error) {
+	var page api.RenditionTextPage
+	if !validSHA256Hex(buildID) {
+		return page, errors.New("rendition build ID must be a lowercase SHA-256")
+	}
+	if limit < 1 || limit > 100 {
+		return page, errors.New("rendition text limit must be between 1 and 100")
+	}
+	if offset < 0 {
+		return page, errors.New("rendition text offset must not be negative")
+	}
+	path := fmt.Sprintf("/api/v1/renditions/%s/text?limit=%d&offset=%d", buildID, limit, offset)
+	if err := c.do(ctx, http.MethodGet, path, nil, nil, &page); err != nil {
+		return api.RenditionTextPage{}, err
+	}
+	if page.BuildID != buildID || page.Limit != limit || page.Offset != offset ||
+		!validSHA256Hex(page.SourceSHA256) || page.Total < 0 || len(page.Segments) > limit ||
+		(len(page.Segments) == 0 && offset < page.Total) {
+		return api.RenditionTextPage{}, errors.New("rendition text response has inconsistent authority")
+	}
+	for _, segment := range page.Segments {
+		if segment.ID == "" || segment.UnitID == "" || segment.Order < 0 ||
+			segment.CharStart < 0 || segment.CharEnd < segment.CharStart ||
+			!validSHA256Hex(segment.Checksum) || segment.Text == "" {
+			return api.RenditionTextPage{}, errors.New("rendition text response has invalid segment authority")
+		}
+	}
+	return page, nil
+}
+
 // SearchWithOptions returns one bounded ranked or filter-only result set.
 func (c *Client) SearchWithOptions(
 	ctx context.Context, query string, limit int, opts SearchOptions,

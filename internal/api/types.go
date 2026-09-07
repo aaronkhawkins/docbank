@@ -500,6 +500,50 @@ type SearchReport struct {
 	ModifiedBefore string      `json:"modified_before,omitzero"`
 }
 
+// EvidenceSearchHit pairs a live document with the immutable evidence that
+// justified its lexical match.
+type EvidenceSearchHit struct {
+	Node         Node   `json:"node"`
+	Path         string `json:"path"`
+	Match        string `json:"match" enum:"name,content"`
+	EvidenceKind string `json:"evidence_kind" enum:"node_name,content_blob,rendition_segment"`
+	BuildID      string `json:"build_id,omitzero" pattern:"^[0-9a-f]{64}$"`
+	SegmentID    string `json:"segment_id,omitzero"`
+	BlobHash     string `json:"blob_hash,omitzero" pattern:"^[0-9a-f]{64}$"`
+	Excerpt      string `json:"excerpt" maxLength:"2048"`
+}
+
+// EvidenceSearchReport is one bounded, explicitly lexical result page.
+type EvidenceSearchReport struct {
+	Mode      string              `json:"mode" enum:"lexical"`
+	Hits      []EvidenceSearchHit `json:"hits"`
+	Limit     int                 `json:"limit" minimum:"1" maximum:"100"`
+	Truncated bool                `json:"truncated"`
+}
+
+// RenditionTextSegment is one immutable, addressable lexical evidence span.
+type RenditionTextSegment struct {
+	ID        string `json:"id"`
+	UnitID    string `json:"unit_id"`
+	Order     int    `json:"order" minimum:"0"`
+	CharStart int    `json:"char_start" minimum:"0"`
+	CharEnd   int    `json:"char_end" minimum:"0"`
+	Checksum  string `json:"checksum" pattern:"^[0-9a-f]{64}$"`
+	Text      string `json:"text"`
+}
+
+// RenditionTextPage is a bounded read from one exact rendition build.
+type RenditionTextPage struct {
+	BuildID      string                        `json:"build_id" pattern:"^[0-9a-f]{64}$"`
+	SourceSHA256 string                        `json:"source_sha256" pattern:"^[0-9a-f]{64}$"`
+	Completeness document.EvidenceCompleteness `json:"completeness"`
+	Truncated    bool                          `json:"build_truncated"`
+	Segments     []RenditionTextSegment        `json:"segments"`
+	Total        int                           `json:"total" minimum:"0"`
+	Limit        int                           `json:"limit" minimum:"1" maximum:"100"`
+	Offset       int                           `json:"offset" minimum:"0"`
+}
+
 // IngestFailure records one source path that failed to import.
 type IngestFailure struct {
 	Path  string `json:"path"`
