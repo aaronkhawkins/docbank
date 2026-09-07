@@ -289,6 +289,64 @@ func registerReadRoutes(api huma.API, d Deps) {
 		return streamContentVersion(ctx, d, version)
 	})
 
+	type evidenceSearchOutput struct{ Body EvidenceSearchReport }
+	huma.Register(api, huma.Operation{
+		OperationID: "searchLexicalEvidence", Method: http.MethodGet,
+		Path: "/api/v1/evidence/search", Summary: "Search live documents with immutable lexical evidence",
+		Description: "This endpoint is explicitly lexical. Each result identifies either the node name, " +
+			"the original content blob, or an immutable rendition build and segment.",
+	}, func(ctx context.Context, in *struct {
+		Q     string `query:"q" required:"true" minLength:"1" maxLength:"4096"`
+		Limit int    `query:"limit" default:"20" minimum:"1" maximum:"100"`
+	}) (*evidenceSearchOutput, error) {
+		hits, truncated, err := d.Store.SearchExplainedLexicalCandidates(
+			ctx, in.Q, in.Limit, store.SearchOptions{},
+		)
+		if err != nil {
+			return nil, FromStoreError(err)
+		}
+		out := &evidenceSearchOutput{Body: EvidenceSearchReport{
+			Mode: "lexical", Hits: []EvidenceSearchHit{}, Limit: in.Limit, Truncated: truncated,
+		}}
+		for _, hit := range hits {
+			out.Body.Hits = append(out.Body.Hits, EvidenceSearchHit{
+				Node: fromStoreNode(hit.Node), Path: hit.Path, Match: hit.Match,
+				EvidenceKind: hit.EvidenceKind, BuildID: hit.BuildID, SegmentID: hit.SegmentID,
+				BlobHash: hit.BlobHash, Excerpt: hit.Excerpt,
+			})
+		}
+		return out, nil
+	})
+
+	type renditionTextOutput struct{ Body RenditionTextPage }
+	huma.Register(api, huma.Operation{
+		OperationID: "readRenditionText", Method: http.MethodGet,
+		Path:    "/api/v1/renditions/{build_id}/text",
+		Summary: "Read bounded normalized text from one immutable rendition build",
+	}, func(ctx context.Context, in *struct {
+		BuildID string `path:"build_id" pattern:"^[0-9a-f]{64}$"`
+		Limit   int    `query:"limit" default:"20" minimum:"1" maximum:"100"`
+		Offset  int    `query:"offset" default:"0" minimum:"0"`
+	}) (*renditionTextOutput, error) {
+		page, err := d.Store.RenditionText(ctx, in.BuildID, in.Limit, in.Offset)
+		if err != nil {
+			return nil, FromStoreError(err)
+		}
+		out := &renditionTextOutput{Body: RenditionTextPage{
+			BuildID: page.BuildID, SourceSHA256: page.SourceSHA256,
+			Completeness: page.Completeness, Truncated: page.BuildTruncated,
+			Segments: []RenditionTextSegment{}, Total: page.Total, Limit: page.Limit, Offset: page.Offset,
+		}}
+		for _, segment := range page.Segments {
+			out.Body.Segments = append(out.Body.Segments, RenditionTextSegment{
+				ID: segment.ID, UnitID: segment.UnitID, Order: segment.Order,
+				CharStart: segment.CharStart, CharEnd: segment.CharEnd,
+				Checksum: segment.Checksum, Text: segment.Text,
+			})
+		}
+		return out, nil
+	})
+
 	type verifyNodeOutput struct{ Body ContentVerification }
 	huma.Register(api, huma.Operation{
 		OperationID: "verifyNodeContent", Method: http.MethodPost, Path: "/api/v1/nodes/{id}/verify",

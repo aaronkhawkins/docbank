@@ -242,6 +242,29 @@ func TestSearchExplainedLexicalCandidatesCitesActiveRenditionSegment(t *testing.
 	assert.Equal(t, versions[0], candidates[0].Node.CurrentVersionID)
 }
 
+func TestRenditionTextReturnsBoundedImmutableSegments(t *testing.T) {
+	s, _ := newRenditionCatalogFixture(t)
+	profile := catalogProcessingProfile(t, false)
+	build := lexicalSearchBuild(s, profile, catalogBuildID, "synthetic bounded transcript")
+	require.NoError(t, s.StageRenditionBuild(t.Context(), build))
+
+	page, err := s.RenditionText(t.Context(), build.ID, 1, 0)
+	require.NoError(t, err)
+	assert.Equal(t, build.ID, page.BuildID)
+	assert.Equal(t, build.SourceSHA256, page.SourceSHA256)
+	assert.Equal(t, len(build.LexicalSegments), page.Total)
+	require.Len(t, page.Segments, 1)
+	assert.Equal(t, build.LexicalSegments[0], page.Segments[0])
+
+	exhausted, err := s.RenditionText(t.Context(), build.ID, 1, page.Total)
+	require.NoError(t, err)
+	assert.Empty(t, exhausted.Segments)
+	_, err = s.RenditionText(t.Context(), build.ID, 101, 0)
+	require.ErrorContains(t, err, "between 1 and 100")
+	_, err = s.RenditionText(t.Context(), build.ID, 1, -1)
+	require.ErrorContains(t, err, "must not be negative")
+}
+
 func TestSearchExplainedLexicalCandidatesIncludesNamePath(t *testing.T) {
 	s := newTestStore(t)
 	docs, err := s.Mkdir(t.Context(), s.RootID(), "docs")

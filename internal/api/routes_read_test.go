@@ -55,6 +55,27 @@ func TestStatByIDAndPath(t *testing.T) {
 	assert.Contains(t, body, `"code":"not_found"`)
 }
 
+func TestEvidenceSearchIsExplicitlyLexicalAndCitesNameAuthority(t *testing.T) {
+	ts, s := newTestServer(t, nil)
+	docs, err := s.Mkdir(t.Context(), s.RootID(), "docs")
+	require.NoError(t, err)
+	node, err := s.CreateFile(t.Context(), docs.ID, "synthetic-registration.pdf",
+		testHash("evidence-search"), 42, "application/pdf")
+	require.NoError(t, err)
+
+	resp, body := get(t, ts, "/api/v1/evidence/search?q=registration&limit=5", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	var report api.EvidenceSearchReport
+	require.NoError(t, json.Unmarshal([]byte(body), &report))
+	assert.Equal(t, "lexical", report.Mode)
+	require.Len(t, report.Hits, 1)
+	assert.Equal(t, node.ID, report.Hits[0].Node.ID)
+	assert.Equal(t, "/docs/synthetic-registration.pdf", report.Hits[0].Path)
+	assert.Equal(t, "node_name", report.Hits[0].EvidenceKind)
+	assert.Empty(t, report.Hits[0].BuildID)
+	assert.Empty(t, report.Hits[0].BlobHash)
+}
+
 func TestStatAndContentVersionDetailExposeActiveSourceMetadata(t *testing.T) {
 	ts, s := newTestServer(t, nil)
 	node, err := s.CreateFile(t.Context(), s.RootID(), "report.pdf", testHash("metadata"), 9, "application/pdf")

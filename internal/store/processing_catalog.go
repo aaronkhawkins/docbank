@@ -212,6 +212,81 @@ type RenditionView struct {
 	Build      RenditionBuildRecord
 }
 
+// RenditionTextPage is one bounded page of immutable lexical evidence from a
+// completed rendition build. Build identity is content-derived and segments
+// retain their exact unit and character coordinates.
+type RenditionTextPage struct {
+	BuildID        string
+	SourceSHA256   string
+	Completeness   document.EvidenceCompleteness
+	BuildTruncated bool
+	Segments       []RenditionLexicalSegmentRecord
+	Total          int
+	Limit          int
+	Offset         int
+}
+
+// RenditionText returns a bounded segment page from one immutable rendition
+// build. Membership is validated in the same read snapshot without loading
+// unrequested segment text.
+func (s *Store) RenditionText(
+	ctx context.Context, buildID string, limit, offset int,
+) (RenditionTextPage, error) {
+	if err := validateCatalogSHA256(buildID, "rendition build ID"); err != nil {
+		return RenditionTextPage{}, fmt.Errorf("rendition build %q: %w", buildID, ErrNotFound)
+	}
+	if limit < 1 || limit > 100 {
+		return RenditionTextPage{}, errors.New("rendition text limit must be between 1 and 100")
+	}
+	if offset < 0 {
+		return RenditionTextPage{}, errors.New("rendition text offset must not be negative")
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return RenditionTextPage{}, fmt.Errorf("starting rendition text snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := validateRenditionBuildStateTx(ctx, tx, buildID); err != nil {
+		return RenditionTextPage{}, err
+	}
+	page := RenditionTextPage{BuildID: buildID, Segments: []RenditionLexicalSegmentRecord{},
+		Limit: limit, Offset: offset}
+	var truncated int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT source_sha256,completeness,truncated,lexical_segment_count
+		FROM rendition_builds WHERE build_id=?`, buildID,
+	).Scan(&page.SourceSHA256, &page.Completeness, &truncated, &page.Total); err != nil {
+		return RenditionTextPage{}, err
+	}
+	page.BuildTruncated = truncated != 0
+	err = func() (retErr error) {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT segment_id,unit_id,segment_order,char_start,char_end,checksum,text
+			FROM rendition_lexical_segments WHERE build_id=?
+			ORDER BY segment_order,segment_id LIMIT ? OFFSET ?`, buildID, limit, offset)
+		if err != nil {
+			return err
+		}
+		defer func() { retErr = errors.Join(retErr, rows.Close()) }()
+		for rows.Next() {
+			var segment RenditionLexicalSegmentRecord
+			if err := rows.Scan(&segment.ID, &segment.UnitID, &segment.Order, &segment.CharStart,
+				&segment.CharEnd, &segment.Checksum, &segment.Text); err != nil {
+				return err
+			}
+			page.Segments = append(page.Segments, segment)
+		}
+		return rows.Err()
+	}()
+	if err != nil {
+		return RenditionTextPage{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return RenditionTextPage{}, fmt.Errorf("closing rendition text snapshot: %w", err)
+	}
+	return page, nil
+}
+
 // ValidateProcessingProfileRecord applies the complete canonical profile
 // contract without mutating catalog state.
 func ValidateProcessingProfileRecord(record ProcessingProfileRecord) error {
