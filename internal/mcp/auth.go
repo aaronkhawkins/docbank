@@ -136,7 +136,7 @@ func (a *Authenticator) Handler(mcpHandler http.Handler) http.Handler {
 	metadata := http.HandlerFunc(a.serveMetadata)
 	mux.Handle("GET /.well-known/oauth-protected-resource", metadata)
 	mux.Handle("GET /.well-known/oauth-protected-resource/mcp", metadata)
-	mux.Handle("/mcp", a.requireResourceHost(a.requireBearer(mcpHandler)))
+	mux.Handle("/mcp", a.requireResourceHost(a.requireResourceOrigin(a.requireBearer(mcpHandler))))
 	return mux
 }
 
@@ -144,6 +144,20 @@ func (a *Authenticator) requireResourceHost(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.EqualFold(r.Host, a.host) {
 			http.Error(w, "misdirected request", http.StatusMisdirectedRequest)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requireResourceOrigin validates every supplied Origin, including on GET.
+// Native MCP clients may omit Origin; browser requests must use the canonical
+// public HTTPS origin even though the reverse proxy connects over loopback HTTP.
+func (a *Authenticator) requireResourceOrigin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origins := r.Header.Values("Origin")
+		if len(origins) != 0 && (len(origins) != 1 || !strings.EqualFold(origins[0], "https://"+a.host)) {
+			http.Error(w, "invalid origin", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)

@@ -77,6 +77,31 @@ func TestAuthenticatorMetadataAndJWTBoundary(t *testing.T) {
 		})
 	}
 
+	for _, origin := range []string{"https://other.example", "http://docbank.example", "null", "", "https://docbank.example/path"} {
+		t.Run("reject origin "+origin, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, resource, nil)
+			request.Header.Set("Authorization", "Bearer "+valid)
+			request.Header["Origin"] = []string{origin}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			assert.Equal(t, http.StatusForbidden, response.Code)
+		})
+	}
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
+		request := httptest.NewRequest(method, resource, nil)
+		request.Header.Set("Authorization", "Bearer "+valid)
+		request.Header.Set("Origin", "https://docbank.example")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		assert.Equal(t, http.StatusNoContent, response.Code)
+	}
+	duplicateOrigin := httptest.NewRequest(http.MethodPost, resource, nil)
+	duplicateOrigin.Header.Set("Authorization", "Bearer "+valid)
+	duplicateOrigin.Header["Origin"] = []string{"https://docbank.example", "https://other.example"}
+	duplicateResponse := httptest.NewRecorder()
+	handler.ServeHTTP(duplicateResponse, duplicateOrigin)
+	assert.Equal(t, http.StatusForbidden, duplicateResponse.Code)
+
 	wrongHost := httptest.NewRequest(http.MethodPost, "https://other.example/mcp", nil)
 	wrongHost.Header.Set("Authorization", "Bearer "+valid)
 	wrongHostResponse := httptest.NewRecorder()
