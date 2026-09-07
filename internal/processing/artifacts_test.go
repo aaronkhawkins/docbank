@@ -76,6 +76,55 @@ func TestPublishRenditionPublishesVerifiedArtifactsAndHeads(t *testing.T) {
 	assert.Equal(t, store.SearchMatchContent, hits[0].Match)
 }
 
+func TestSuppliedOCREvidencePublishesWithoutChangingOriginalAndBecomesSearchable(t *testing.T) {
+	fixture := newPublicationFixture(t)
+	original, err := fixture.catalog.NodeByPath(t.Context(), "/source.pdf")
+	require.NoError(t, err)
+	policy, err := document.NewEvidencePolicy(100_000)
+	require.NoError(t, err)
+	structured := []byte(`{"schema_version":1,"markdown":"Synthetic registration\nPlate: TEST-001","layout":[{"label":"text","boxes":[[10,20,300,80]]}]}`)
+	evidence, providerArtifacts, err := document.BuildSuppliedOCREvidenceV1(document.SuppliedOCRResult{
+		Family: "pdf", Engine: "focr", EngineVersion: "0.8.0",
+		Model:          "unlimited-ocr.v0.7.0.int8.focrq",
+		Recipe:         "unlimited-ocr-ffn-int8-attn-bf16-lmhead-bf16-v1",
+		ManifestSHA256: "573340710167697891bf52dfa4cbb5d0a02a68f3011c01f8ef83fd34622fb592",
+		ManifestBytes:  4_157_448_783,
+		ProducedAt:     "2026-09-07T12:34:56.000000000Z",
+		SourceSHA256:   original.BlobHash,
+		Text:           "Synthetic registration\nPlate: TEST-001", Structured: structured,
+	}, policy)
+	require.NoError(t, err)
+
+	staged := fixture.stageSuppliedOCR(t,
+		publicationIDs{"focr-build", "focr-attachment", "focr-generation"},
+		evidence, providerArtifacts, original.CurrentVersionID, original.BlobHash,
+	)
+	publisher, err := NewArtifactPublisher(fixture.catalog, fixture.blobs)
+	require.NoError(t, err)
+	published, err := publisher.PublishRendition(t.Context(), staged)
+	require.NoError(t, err)
+	require.Len(t, published.Artifacts, 4)
+
+	after, err := fixture.catalog.NodeByPath(t.Context(), "/source.pdf")
+	require.NoError(t, err)
+	assert.Equal(t, original, after, "derivative publication must not mutate original authority")
+	view, err := fixture.catalog.ActiveRendition(
+		t.Context(), original.CurrentVersionID, staged.Attachment.Profile.Fingerprint)
+	require.NoError(t, err)
+	assert.Equal(t, original.CurrentVersionID, view.Attachment.ContentVersionID)
+	assert.Equal(t, original.BlobHash, view.Build.SourceSHA256)
+	assert.ElementsMatch(t, []string{
+		"normalized_evidence", "sanitized_markdown", "provider_transcript", "structured_evidence",
+	}, renditionArtifactRoles(view.Build.Artifacts))
+
+	hits, truncated, err := fixture.catalog.SearchPage(t.Context(), "TEST-001", 10)
+	require.NoError(t, err)
+	assert.False(t, truncated)
+	require.Len(t, hits, 1)
+	assert.Equal(t, original.ID, hits[0].Node.ID)
+	assert.Equal(t, original.CurrentVersionID, hits[0].Node.CurrentVersionID)
+}
+
 func TestPublishRenditionExactRetryIgnoresDerivedMD5(t *testing.T) {
 	// Mutation caught: loading the first publication hydrates the Markdown MD5,
 	// which must not change the immutable build declaration used by a retry.
@@ -696,6 +745,90 @@ func (f publicationFixture) stageForSource(
 			{ID: build.Artifacts[1].ID, Payload: bytes.NewReader(markdownBytes)},
 		},
 	}
+}
+
+func (f publicationFixture) stageSuppliedOCR(
+	t *testing.T, ids publicationIDs, evidence document.NormalizedEvidenceV1,
+	providerArtifacts []document.RenditionArtifact, versionID, sourceHash string,
+) StagedRendition {
+	t.Helper()
+	require.Len(t, providerArtifacts, 2)
+	staged := f.stageForSource(t, ids, evidence.Units[0].Text,
+		evidence.Units[0].Text, versionID, sourceHash)
+	updateStagedProfile(t, &staged, func(profile *document.ProcessingProfileV1) {
+		profile.Rendition.RequestedArtifacts = []document.EvidenceArtifactRole{
+			document.EvidenceArtifactStructured, document.EvidenceArtifactTranscript,
+		}
+	})
+	evidenceBytes, evidenceHash, err := document.MarshalNormalizedEvidenceV1(evidence)
+	require.NoError(t, err)
+	rendition, err := document.BuildRenditionV1(evidence, staged.RenditionPolicy)
+	require.NoError(t, err)
+	policy := jsontext.Value(`{"roles":[{"max_count":1,"min_count":1,"role":"normalized_evidence"},{"max_count":1,"min_count":1,"role":"provider_transcript"},{"max_count":1,"min_count":1,"role":"sanitized_markdown"},{"max_count":1,"min_count":1,"role":"structured_evidence"}],"version":1}`)
+	type retainedArtifact struct {
+		role    string
+		payload []byte
+	}
+	retained := []retainedArtifact{
+		{role: "normalized_evidence", payload: evidenceBytes},
+		{role: "sanitized_markdown", payload: rendition.Markdown},
+	}
+	for _, artifact := range providerArtifacts {
+		retained = append(retained, retainedArtifact{role: string(artifact.Role), payload: artifact.Payload})
+	}
+	records := make([]store.RenditionArtifactRecord, 0, len(retained))
+	payloads := make([]StagedArtifact, 0, len(retained))
+	for index, artifact := range retained {
+		hash := processingSHA256(artifact.payload)
+		id := "artifact_" + processingHash(ids.build+strconv.Itoa(index))
+		records = append(records, store.RenditionArtifactRecord{
+			ID: id, Role: artifact.role, BlobHash: hash, Size: int64(len(artifact.payload)),
+			Checksum: hash, State: store.RenditionArtifactVerified,
+		})
+		payloads = append(payloads, StagedArtifact{ID: id, Payload: bytes.NewReader(artifact.payload)})
+	}
+	units := make([]store.RenditionUnitRecord, len(rendition.Units))
+	for index, unit := range rendition.Units {
+		units[index] = store.RenditionUnitRecord{
+			ID: unit.ID, EvidenceUnitID: unit.EvidenceUnitID, Order: unit.Order,
+			Checksum: unit.Checksum, HeadingPath: append([]string(nil), unit.HeadingPath...),
+			Locator: unit.Locator,
+		}
+	}
+	segments := make([]store.RenditionLexicalSegmentRecord, len(rendition.LexicalSegments))
+	for index, segment := range rendition.LexicalSegments {
+		segments[index] = store.RenditionLexicalSegmentRecord{
+			ID: segment.ID, UnitID: segment.UnitID, Order: segment.Order,
+			CharStart: segment.CharStart, CharEnd: segment.CharEnd,
+			Checksum: segment.Checksum, Text: segment.Text,
+		}
+	}
+	warnings := make([]string, len(rendition.Warnings))
+	for index, warning := range rendition.Warnings {
+		warnings[index] = warning.Code
+	}
+	staged.Rendition = rendition
+	staged.Build.EvidenceChecksum = evidenceHash
+	staged.Build.RenditionChecksum = rendition.Checksum
+	staged.Build.MarkdownChecksum = rendition.MarkdownChecksum
+	staged.Build.Completeness = rendition.Completeness
+	staged.Build.Warnings = warnings
+	staged.Build.CapturedArtifactPolicy = policy
+	staged.Build.CapturedArtifactPolicyFingerprint = processingSHA256(policy)
+	staged.Build.DeclaredArtifactCount = len(records)
+	staged.Build.Artifacts = records
+	staged.Build.Units = units
+	staged.Build.LexicalSegments = segments
+	staged.Artifacts = payloads
+	return staged
+}
+
+func renditionArtifactRoles(records []store.RenditionArtifactRecord) []string {
+	roles := make([]string, len(records))
+	for index, record := range records {
+		roles[index] = record.Role
+	}
+	return roles
 }
 
 func (f publicationFixture) mustSourceHash() string {
