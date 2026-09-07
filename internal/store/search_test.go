@@ -208,6 +208,7 @@ func TestAcquireSemanticSearchAuthorityUsesStoredDescriptorAndCoverage(t *testin
 		record.BindingID, "retrieval-test", now, time.Minute, SearchOptions{MIMEType: "application/pdf"})
 	require.NoError(t, err)
 	assert.Equal(t, record.VectorSpace.Descriptor, authority.VectorSpace.Descriptor)
+	assert.Equal(t, document.RetrievalPolicyV1{LexicalLimit: 100, VectorLimit: 100}, authority.Retrieval)
 	assert.False(t, authority.BindingRequired)
 	assert.Equal(t, 2, authority.ScopedDocuments)
 	assert.Equal(t, 1, authority.CompleteDocuments)

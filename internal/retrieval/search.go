@@ -80,7 +80,7 @@ func (searcher *Searcher) Search(ctx context.Context, query Query) (Report, erro
 	case ModeLexical, ModeAuto:
 		return searcher.lexical(ctx, query, requested, Coverage{State: CoverageUnknown})
 	case ModeSemantic:
-		semantic, coverage, truncated, err := searcher.semantic(ctx, query)
+		semantic, coverage, _, truncated, err := searcher.semantic(ctx, query)
 		if err != nil {
 			return Report{}, err
 		}
@@ -105,11 +105,13 @@ func (failure *semanticReleaseError) Unwrap() []error {
 }
 
 func (searcher *Searcher) hybrid(ctx context.Context, query Query, requested Mode) (Report, error) {
-	lexical, lexicalTruncated, err := searcher.collectLexical(ctx, query)
+	semantic, coverage, policy, semanticTruncated, err := searcher.semantic(ctx, query)
 	if err != nil {
 		return Report{}, err
 	}
-	semantic, coverage, semanticTruncated, err := searcher.semantic(ctx, query)
+	lexicalQuery := query
+	lexicalQuery.Limit = policy.LexicalLimit
+	lexical, lexicalTruncated, err := searcher.collectLexical(ctx, lexicalQuery)
 	if err != nil {
 		return Report{}, err
 	}
@@ -117,17 +119,21 @@ func (searcher *Searcher) hybrid(ctx context.Context, query Query, requested Mod
 		lexicalTruncated || semanticTruncated, query.Limit)
 }
 
-func (searcher *Searcher) semantic(ctx context.Context, query Query) (_ []Candidate, coverage Coverage, truncated bool, retErr error) {
+func (searcher *Searcher) semantic(ctx context.Context, query Query) (
+	_ []Candidate, coverage Coverage, policy document.RetrievalPolicyV1, truncated bool, retErr error,
+) {
 	backend, ok := searcher.backend.(SemanticBackend)
 	if !ok || searcher.encoders == nil {
-		return nil, Coverage{State: CoverageUnknown}, false, errors.New("semantic retrieval is not configured")
+		return nil, Coverage{State: CoverageUnknown}, document.RetrievalPolicyV1{}, false,
+			errors.New("semantic retrieval is not configured")
 	}
 	authority, err := backend.AcquireSemanticSearchAuthority(ctx,
 		query.ProcessingProfileFingerprint, query.BindingID, searcher.owner,
 		searcher.clock().UTC(), searcher.leaseDuration, query.Scope)
 	if err != nil {
-		return nil, Coverage{State: CoverageUnknown}, false, err
+		return nil, Coverage{State: CoverageUnknown}, document.RetrievalPolicyV1{}, false, err
 	}
+	policy = authority.Retrieval
 	defer func() {
 		if releaseErr := backend.ReleaseVectorIndexGeneration(context.WithoutCancel(ctx), authority.Lease.ID,
 			authority.Lease.FencingToken, searcher.clock().UTC()); releaseErr != nil {
@@ -146,51 +152,55 @@ func (searcher *Searcher) semantic(ctx context.Context, query Query) (_ []Candid
 	}
 	provider, err := searcher.encoders.ResolveQueryEncoder(ctx, authority.VectorSpace.Descriptor)
 	if err != nil {
-		return nil, coverage, false, err
+		return nil, coverage, policy, false, err
 	}
 	if provider == nil {
-		return nil, coverage, false, errors.New("query encoder runtime is unavailable")
+		return nil, coverage, policy, false, errors.New("query encoder runtime is unavailable")
 	}
 	if !reflect.DeepEqual(provider.Descriptor(), authority.VectorSpace.Descriptor) {
-		return nil, coverage, false, errors.New("query encoder does not reproduce the active vector-space descriptor")
+		return nil, coverage, policy, false, errors.New("query encoder does not reproduce the active vector-space descriptor")
 	}
 	if err := document.ValidateEmbeddingQueryCompatibility(authority.VectorSpace.Descriptor,
 		provider.Descriptor()); err != nil {
-		return nil, coverage, false, err
+		return nil, coverage, policy, false, err
 	}
 	inputs := []document.EmbeddingInput{{Key: "query", Role: document.EmbeddingRoleQuery,
 		Kind: document.EmbeddingInputQueryText, Text: query.Text}}
 	if err := document.ValidateEmbeddingProviderRequest(provider, inputs, query.Authorization); err != nil {
-		return nil, coverage, false, err
+		return nil, coverage, policy, false, err
 	}
 	embedded, err := document.ExecuteEmbedding(ctx, provider, inputs, query.Authorization)
 	if err != nil {
-		return nil, coverage, false, err
+		return nil, coverage, policy, false, err
 	}
 	stored := authority.Lease.Generation
 	generation, err := vectorindex.OpenGeneration(bytes.NewReader(stored.Bytes), int64(len(stored.Bytes)))
 	if err != nil {
-		return nil, coverage, false, err
+		return nil, coverage, policy, false, err
 	}
 	metadata := generation.Metadata()
 	descriptor := authority.VectorSpace.Descriptor
 	if metadata.VectorSpaceID != authority.VectorSpace.ID || metadata.Dimension != descriptor.Dimension ||
 		metadata.Metric != descriptor.Metric || metadata.Normalization != descriptor.Normalization ||
 		metadata.Manifest.Checksum != stored.IndexManifestChecksum || metadata.RowCount != stored.RowCount {
-		return nil, coverage, false, errors.New("leased vector generation is incompatible with active query authority")
+		return nil, coverage, policy, false, errors.New("leased vector generation is incompatible with active query authority")
 	}
 	neighbors, err := generation.Search(embedded.Vectors[0].Values, metadata.RowCount)
 	if err != nil {
-		return nil, coverage, false, err
+		return nil, coverage, policy, false, err
+	}
+	semanticLimit := query.Limit
+	if query.Mode == ModeHybrid {
+		semanticLimit = policy.VectorLimit
 	}
 	resolution, err := backend.ResolveSemanticCandidates(ctx, query.ProcessingProfileFingerprint,
 		query.BindingID, authority.InputKind, authority.VectorSpace.ID, stored.SourceManifestChecksum,
-		neighbors, query.Limit, query.Scope)
+		neighbors, semanticLimit, query.Scope)
 	if err != nil {
-		return nil, coverage, false, err
+		return nil, coverage, policy, false, err
 	}
 	if resolution.SourceManifestChecksum != stored.SourceManifestChecksum {
-		return nil, coverage, false, store.ErrVectorIndexSourceStale
+		return nil, coverage, policy, false, store.ErrVectorIndexSourceStale
 	}
 	coverage.ScopedDocuments = resolution.ScopedDocuments
 	coverage.CompleteDocuments = resolution.CompleteDocuments
@@ -202,7 +212,7 @@ func (searcher *Searcher) semantic(ctx context.Context, query Query) (_ []Candid
 	candidates := make([]Candidate, len(resolved))
 	for index, item := range resolved {
 		if item.VectorSpaceID != authority.VectorSpace.ID {
-			return nil, coverage, false, errors.New("semantic result escaped the active vector space")
+			return nil, coverage, policy, false, errors.New("semantic result escaped the active vector space")
 		}
 		candidates[index] = Candidate{Document: DocumentIdentity{VaultID: item.VaultID,
 			NodeID: item.NodeID, ContentVersionID: item.ContentVersionID}, Lane: LaneSemantic,
@@ -213,7 +223,7 @@ func (searcher *Searcher) semantic(ctx context.Context, query Query) (_ []Candid
 				InputGenerationID: item.InputGenerationID, InputID: item.InputID,
 				InputKind: item.InputKind}}}
 	}
-	return candidates, coverage, resolution.Truncated, nil
+	return candidates, coverage, policy, resolution.Truncated, nil
 }
 
 func normalizeQuery(query Query) (Query, error) {

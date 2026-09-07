@@ -169,6 +169,33 @@ func TestSearcherHybridUsesRRFWithoutComparingRawScores(t *testing.T) {
 	assert.InDelta(t, 2.0/61.0, report.Results[0].Score, 1e-12)
 }
 
+func TestSearcherHybridCollectsIndependentProfileLaneLimitsBeforeFinalCutoff(t *testing.T) {
+	t.Parallel()
+	searcher, backend, _, descriptor := retrievalSearcherFixture(t, true, 1)
+	backend.authority.Retrieval = document.RetrievalPolicyV1{LexicalLimit: 2, VectorLimit: 2}
+	backend.lexical = []store.ExplainedLexicalCandidate{
+		{Node: store.Node{ID: 1, CurrentVersionID: "lexical-only"}, Path: "/lexical.pdf", EvidenceKind: "node_name"},
+		{Node: store.Node{ID: 3, CurrentVersionID: "shared"}, Path: "/shared.pdf", EvidenceKind: "node_name"},
+	}
+	backend.semantic = []store.SemanticSearchCandidate{
+		{VaultID: "vault", NodeID: 2, ContentVersionID: "semantic-only", Path: "/semantic.pdf",
+			VectorSpaceID: backend.authority.VectorSpace.ID, EmbeddingSetID: "semantic-set",
+			InputGenerationID: "semantic-generation", InputID: "semantic", InputKind: document.EmbeddingInputOriginalFile},
+		{VaultID: "vault", NodeID: 3, ContentVersionID: "shared", Path: "/shared.pdf",
+			VectorSpaceID: backend.authority.VectorSpace.ID, EmbeddingSetID: "shared-set",
+			InputGenerationID: "shared-generation", InputID: "shared", InputKind: document.EmbeddingInputOriginalFile},
+	}
+
+	report, err := searcher.Search(t.Context(), Query{Text: "query", Mode: ModeHybrid, Limit: 1,
+		ProcessingProfileFingerprint: strings.Repeat("a", 64), BindingID: "required",
+		Authorization: retrievalAuthorization(descriptor)})
+	require.NoError(t, err)
+	require.Len(t, report.Results, 1)
+	assert.Equal(t, int64(3), report.Results[0].Document.NodeID)
+	assert.Equal(t, 2, backend.lexicalRequestedLimit)
+	assert.Equal(t, 2, backend.semanticRequestedLimit)
+}
+
 func TestSearcherExplicitSemanticModesReportProviderFailureAndCoverage(t *testing.T) {
 	t.Parallel()
 	t.Run("provider outage", func(t *testing.T) {
@@ -319,6 +346,7 @@ func retrievalSearcherFixture(t *testing.T, required bool, scoped int) (
 				IndexManifestChecksum:  generation.Metadata().Manifest.Checksum,
 				RowCount:               generation.Metadata().RowCount}},
 		BindingRequired: required,
+		Retrieval:       document.RetrievalPolicyV1{LexicalLimit: 100, VectorLimit: 100},
 		ScopedDocuments: scoped, CompleteDocuments: 1,
 	}, semantic: []store.SemanticSearchCandidate{{VaultID: "vault", NodeID: 8,
 		ContentVersionID: "version-semantic", Path: "/semantic.pdf",
@@ -346,6 +374,8 @@ type retrievalBackendStub struct {
 	acquiredAt             time.Time
 	releasedAt             time.Time
 	lexicalCalls           int
+	lexicalRequestedLimit  int
+	semanticRequestedLimit int
 	releaseErr             error
 	releaseContextErr      error
 	finalScopedDocuments   int
@@ -362,9 +392,10 @@ func (backend *retrievalBackendStub) AcquireSemanticSearchAuthority(_ context.Co
 
 func (backend *retrievalBackendStub) ResolveSemanticCandidates(_ context.Context, _, _ string,
 	_ document.EmbeddingInputKind, _, sourceManifest string, neighbors []vectorindex.Neighbor,
-	_ int, _ store.SearchOptions,
+	limit int, _ store.SearchOptions,
 ) (store.SemanticSearchResolution, error) {
 	backend.neighborCount = len(neighbors)
+	backend.semanticRequestedLimit = limit
 	backend.sourceManifest = sourceManifest
 	scoped, complete := backend.finalScopedDocuments, backend.finalCompleteDocuments
 	if !backend.finalCoverageSet {
@@ -468,11 +499,17 @@ func retrievalVectorFixture(t *testing.T) (document.EmbeddingDescriptor, *vector
 
 func (backend *retrievalBackendStub) VaultID() string { return backend.vaultID }
 
-func (backend *retrievalBackendStub) SearchExplainedLexicalCandidates(context.Context, string, int,
-	store.SearchOptions,
+func (backend *retrievalBackendStub) SearchExplainedLexicalCandidates(_ context.Context, _ string, limit int,
+	_ store.SearchOptions,
 ) ([]store.ExplainedLexicalCandidate, bool, error) {
 	backend.lexicalCalls++
-	return append([]store.ExplainedLexicalCandidate(nil), backend.lexical...), backend.lexicalTruncated, nil
+	backend.lexicalRequestedLimit = limit
+	candidates := backend.lexical
+	truncated := backend.lexicalTruncated || len(candidates) > limit
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return append([]store.ExplainedLexicalCandidate(nil), candidates...), truncated, nil
 }
 
 func TestSearcherHybridReportsLaneAndFusionTruncation(t *testing.T) {

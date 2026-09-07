@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -260,6 +261,7 @@ type SemanticSearchAuthority struct {
 	VectorSpace       EmbeddingVectorSpaceRecord
 	Lease             VectorIndexReaderLease
 	InputKind         document.EmbeddingInputKind
+	Retrieval         document.RetrievalPolicyV1
 	BindingRequired   bool
 	ScopedDocuments   int
 	CompleteDocuments int
@@ -277,6 +279,14 @@ func (s *Store) AcquireSemanticSearchAuthority(ctx context.Context, profileFinge
 	binding, fingerprints, err := embeddingProfileBindingAuthority(ctx, s.db, profileFingerprint, bindingID)
 	if err != nil {
 		return SemanticSearchAuthority{}, err
+	}
+	profileRecord, err := loadProcessingProfile(ctx, s.db, profileFingerprint)
+	if err != nil {
+		return SemanticSearchAuthority{}, err
+	}
+	var profile document.ProcessingProfileV1
+	if err := json.Unmarshal(profileRecord.CanonicalProfile, &profile); err != nil {
+		return SemanticSearchAuthority{}, fmt.Errorf("decoding semantic search processing profile: %w", err)
 	}
 	vectorSpaceID := fingerprints.VectorSpace[bindingID]
 	var space EmbeddingVectorSpaceRecord
@@ -317,6 +327,7 @@ func (s *Store) AcquireSemanticSearchAuthority(ctx context.Context, profileFinge
 		return SemanticSearchAuthority{}, err
 	}
 	return SemanticSearchAuthority{VectorSpace: space, Lease: lease, InputKind: binding.InputKind,
+		Retrieval:       profile.Retrieval,
 		BindingRequired: binding.Activation == document.EmbeddingRequired,
 		ScopedDocuments: required, CompleteDocuments: complete}, nil
 }
