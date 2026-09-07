@@ -74,6 +74,25 @@ _ = artifact // retain the provider transcript with the source record
 
 The provider value must be a lowercase identifier. Docbank keeps the exact provider and transcript text in the `supplied-transcript/v1` JSON artifact, while normalized evidence and the rendition apply their existing Unicode, Markdown, and character limits. The evidence uses the `audio` family with a generic unit and `degraded_provenance` completeness because supplied text has no timing or speaker data. The caller still associates the transcript with the audio source and its source version. This operation does not inspect audio, run speech recognition, verify provider identity, or create ingestion and search records.
 
+## Import a supplied focr result
+
+`BuildSuppliedOCREvidenceV1` accepts the exact JSON result produced by focr
+0.8.0 (`schema_version`, `markdown`, and labeled source-pixel `layout` boxes).
+The caller also supplies the original SHA-256 plus the engine, model, recipe,
+model-manifest byte count and SHA-256, and canonical production time. The Markdown
+argument must match the JSON Markdown exactly, preventing a transcript from
+being attached to unrelated structured output.
+
+The returned normalized evidence deliberately uses a generic unit and
+`degraded_provenance`: focr layout boxes do not associate text ranges with
+pages or regions closely enough for Docbank to invent those links. The exact
+focr JSON is retained byte-for-byte as `structured_evidence`; a separate
+canonical `supplied-ocr/v1` transcript artifact records source and execution
+provenance. Provider scores, inferred dates, plates, VINs, and image
+attachments are not synthesized. An application must still publish these
+artifacts through a source-version-bound rendition attachment before they are
+searchable.
+
 ## Run Mistral OCR safely
 
 Mistral uploads fail closed until an operator has produced and supplied a
