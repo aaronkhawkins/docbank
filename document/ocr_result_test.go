@@ -70,12 +70,29 @@ func TestBuildSuppliedOCREvidenceV1RejectsUnboundOrInventedInput(t *testing.T) {
 
 	tests := map[string]func(*document.SuppliedOCRResult){
 		"unsupported family":      func(value *document.SuppliedOCRResult) { value.Family = "audio" },
+		"unsupported engine":      func(value *document.SuppliedOCRResult) { value.Engine = "other" },
+		"unsupported version":     func(value *document.SuppliedOCRResult) { value.EngineVersion = "0.9.0" },
 		"missing source digest":   func(value *document.SuppliedOCRResult) { value.SourceSHA256 = "" },
 		"invalid manifest digest": func(value *document.SuppliedOCRResult) { value.ManifestSHA256 = "manifest" },
 		"missing manifest size":   func(value *document.SuppliedOCRResult) { value.ManifestBytes = 0 },
 		"non-canonical time":      func(value *document.SuppliedOCRResult) { value.ProducedAt = "2026-09-07T12:34:56Z" },
 		"blank transcript":        func(value *document.SuppliedOCRResult) { value.Text = " \n\t" },
 		"invalid structured JSON": func(value *document.SuppliedOCRResult) { value.Structured = []byte(`{"x":`) },
+		"trailing JSON": func(value *document.SuppliedOCRResult) {
+			value.Structured = []byte(`{"schema_version":1,"markdown":"Synthetic text","layout":[]} {}`)
+		},
+		"missing layout": func(value *document.SuppliedOCRResult) {
+			value.Structured = []byte(`{"schema_version":1,"markdown":"Synthetic text"}`)
+		},
+		"missing boxes": func(value *document.SuppliedOCRResult) {
+			value.Structured = []byte(`{"schema_version":1,"markdown":"Synthetic text","layout":[{"label":"text"}]}`)
+		},
+		"duplicate root field": func(value *document.SuppliedOCRResult) {
+			value.Structured = []byte(`{"schema_version":1,"markdown":"Synthetic text","markdown":"Synthetic text","layout":[]}`)
+		},
+		"duplicate nested field": func(value *document.SuppliedOCRResult) {
+			value.Structured = []byte(`{"schema_version":1,"markdown":"Synthetic text","layout":[{"label":"text","label":"text","boxes":[]}]}`)
+		},
 		"schema drift": func(value *document.SuppliedOCRResult) {
 			value.Structured = []byte(`{"schema_version":2,"markdown":"Synthetic text","layout":[]}`)
 		},

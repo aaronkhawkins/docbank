@@ -38,6 +38,7 @@ type EvidenceReference struct {
 	Kind              string
 	VaultID           string
 	NodeID            int64
+	NodeRevision      int64
 	ContentVersionID  string
 	VectorSpaceID     string
 	EmbeddingSetID    string

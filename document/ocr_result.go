@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"go.kenn.io/docbank/document/internal/manifestjson"
 	"go.kenn.io/docbank/internal/canonical"
 )
 
@@ -169,6 +170,9 @@ func BuildSuppliedOCREvidenceV1(
 }
 
 func validateFOCROutputV1(encoded []byte, transcript string) error {
+	if err := manifestjson.RejectDuplicateKeys(encoded, "supplied OCR structured result"); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.DisallowUnknownFields()
 	var output focrOutputV1

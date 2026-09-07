@@ -37,6 +37,11 @@ func TestSearcherEmbedsQueryOnlyForExplicitSemanticModes(t *testing.T) {
 				assert.Empty(t, provider.rendered)
 				assert.True(t, backend.acquiredAt.IsZero(), "lexical requests must not acquire semantic authority")
 				assert.Equal(t, ModeLexical, report.ActualMode)
+				requested := mode
+				if requested == "" {
+					requested = ModeAuto
+				}
+				assert.Equal(t, requested, report.RequestedMode)
 				require.Len(t, report.Results, 1)
 				assert.Equal(t, "/notes.pdf", report.Results[0].Path)
 			}
@@ -47,7 +52,7 @@ func TestSearcherEmbedsQueryOnlyForExplicitSemanticModes(t *testing.T) {
 func TestSearcherLexicalModePreservesStoreOrderAndStableEvidence(t *testing.T) {
 	t.Parallel()
 	backend := &retrievalBackendStub{vaultID: "vault", lexical: []store.ExplainedLexicalCandidate{
-		{Node: store.Node{ID: 4, CurrentVersionID: "version-name", Name: "alpha.pdf"},
+		{Node: store.Node{ID: 4, Revision: 7, CurrentVersionID: "version-name", Name: "alpha.pdf"},
 			Path: "/alpha.pdf", Match: store.SearchMatchName, EvidenceKind: "node_name", Excerpt: "alpha.pdf"},
 		{Node: store.Node{ID: 2, CurrentVersionID: "version-content", Name: "notes.pdf"},
 			Path: "/notes.pdf", Match: store.SearchMatchContent, EvidenceKind: "rendition_segment",
@@ -61,6 +66,7 @@ func TestSearcherLexicalModePreservesStoreOrderAndStableEvidence(t *testing.T) {
 	assert.Equal(t, ModeLexical, report.ActualMode)
 	require.Len(t, report.Results, 2)
 	assert.Equal(t, int64(4), report.Results[0].Document.NodeID)
+	assert.Equal(t, int64(7), report.Results[0].Evidence[0].NodeRevision)
 	assert.Equal(t, "alpha.pdf", report.Results[0].Excerpt)
 	assert.Equal(t, "version-content", report.Results[1].Evidence[0].ContentVersionID)
 	assert.Equal(t, "build", report.Results[1].Evidence[0].BuildID)
@@ -218,7 +224,21 @@ func TestSearcherSemanticPropagatesLeaseReleaseFailure(t *testing.T) {
 		Authorization: retrievalAuthorization(descriptor)})
 
 	require.ErrorContains(t, err, "lease release failure")
+	require.ErrorIs(t, err, provider.err)
+	require.ErrorIs(t, err, backend.releaseErr)
 	assert.Zero(t, backend.lexicalCalls, "a lease failure must not be hidden by lexical degradation")
+}
+
+func TestSearcherReturnsLeaseFailureAfterSuccessfulSemanticSearch(t *testing.T) {
+	t.Parallel()
+	searcher, backend, _, descriptor := retrievalSearcherFixture(t, true, 1)
+	backend.releaseErr = errors.New("synthetic lease release failure")
+
+	_, err := searcher.Search(t.Context(), Query{Text: "query", Mode: ModeSemantic, Limit: 3,
+		ProcessingProfileFingerprint: strings.Repeat("a", 64), BindingID: "required",
+		Authorization: retrievalAuthorization(descriptor)})
+
+	require.ErrorIs(t, err, backend.releaseErr)
 }
 
 func TestSearcherReleasesLeaseAfterCallerCancellation(t *testing.T) {

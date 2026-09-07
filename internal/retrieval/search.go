@@ -68,12 +68,15 @@ func NewSearcher(config SearcherConfig) (*Searcher, error) {
 }
 
 func (searcher *Searcher) Search(ctx context.Context, query Query) (Report, error) {
+	requested := query.Mode
+	if requested == "" {
+		requested = ModeAuto
+	}
 	query, err := normalizeQuery(query)
 	if err != nil {
 		return Report{}, err
 	}
-	requested := query.Mode
-	switch requested {
+	switch query.Mode {
 	case ModeLexical, ModeAuto:
 		return searcher.lexical(ctx, query, requested, Coverage{State: CoverageUnknown})
 	case ModeSemantic:
@@ -97,7 +100,9 @@ func (failure *semanticReleaseError) Error() string {
 	return fmt.Sprintf("%v; releasing semantic generation: %v", failure.operation, failure.release)
 }
 
-func (failure *semanticReleaseError) Unwrap() error { return failure.release }
+func (failure *semanticReleaseError) Unwrap() []error {
+	return []error{failure.operation, failure.release}
+}
 
 func (searcher *Searcher) hybrid(ctx context.Context, query Query, requested Mode) (Report, error) {
 	lexical, lexicalTruncated, err := searcher.collectLexical(ctx, query)
@@ -239,7 +244,8 @@ func (searcher *Searcher) collectLexical(ctx context.Context, query Query) ([]Ca
 			Rank: index + 1, Path: hit.Path, Excerpt: hit.Excerpt,
 			Evidence: []EvidenceReference{{Kind: hit.EvidenceKind, VaultID: searcher.backend.VaultID(),
 				NodeID: hit.Node.ID, ContentVersionID: hit.Node.CurrentVersionID,
-				BuildID: hit.BuildID, SegmentID: hit.SegmentID, BlobHash: hit.BlobHash}}}
+				NodeRevision: hit.Node.Revision,
+				BuildID:      hit.BuildID, SegmentID: hit.SegmentID, BlobHash: hit.BlobHash}}}
 	}
 	return candidates, truncated, nil
 }
