@@ -317,6 +317,31 @@ func (s *Store) StageRenditionBuild(ctx context.Context, record RenditionBuildRe
 	})
 }
 
+// RenditionBuildByID returns one complete immutable rendition build. It is a
+// read-only preflight for idempotent callers; StageRenditionBuild remains the
+// final concurrency-safe authority check.
+func (s *Store) RenditionBuildByID(ctx context.Context, id string) (RenditionBuildRecord, error) {
+	if err := validateCatalogSHA256(id, "rendition build ID"); err != nil {
+		return RenditionBuildRecord{}, fmt.Errorf("rendition build %q: %w", id, ErrNotFound)
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return RenditionBuildRecord{}, fmt.Errorf("starting rendition build snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	record, err := loadRenditionBuild(ctx, tx, id)
+	if err != nil {
+		return RenditionBuildRecord{}, err
+	}
+	if err := validateRenditionBuildStateTx(ctx, tx, id); err != nil {
+		return RenditionBuildRecord{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return RenditionBuildRecord{}, fmt.Errorf("closing rendition build snapshot: %w", err)
+	}
+	return record, nil
+}
+
 // StageRenditionBuildWithRoot atomically records a complete immutable build
 // and the exact fenced authority that protects it from concurrent maintenance.
 func (s *Store) StageRenditionBuildWithRoot(
@@ -406,14 +431,16 @@ func stageRenditionBuildTx(
 				normalized.CapturedArtifactPolicyFingerprint,
 			).Scan(&existingID)
 			if identityErr == nil {
-				return fmt.Errorf("rendition build identity already belongs to immutable build %s", existingID)
+				return fmt.Errorf("%w: identity already belongs to immutable build %s",
+					ErrRenditionBuildConflict, existingID)
 			}
 		}
 		if loadErr != nil {
 			return loadErr
 		}
 		if !renditionBuildDeclarationEqual(stored, normalized) {
-			return fmt.Errorf("rendition build %s names different immutable metadata", normalized.ID)
+			return fmt.Errorf("%w: build %s names different immutable metadata",
+				ErrRenditionBuildConflict, normalized.ID)
 		}
 		return validateRenditionBuildStateTx(ctx, tx, normalized.ID)
 	}

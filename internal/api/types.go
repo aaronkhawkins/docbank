@@ -464,6 +464,41 @@ type UploadReceipt struct {
 	ComputedSize int64  `json:"computed_size"`
 }
 
+// SuppliedOCRPublicationMetadata declares the immutable source binding and
+// exact caller-produced focr artifacts carried by the multipart request.
+type SuppliedOCRPublicationMetadata struct {
+	ContentVersionID string `json:"content_version_id" format:"uuid"`
+	SourceSHA256     string `json:"source_sha256" pattern:"^[0-9a-f]{64}$"`
+	SubmissionKey    string `json:"submission_key" pattern:"^[0-9a-f]{64}$"`
+	Family           string `json:"family" enum:"image,pdf"`
+	Engine           string `json:"engine" enum:"focr"`
+	EngineVersion    string `json:"engine_version" enum:"0.8.0"`
+	Model            string `json:"model"`
+	Recipe           string `json:"recipe"`
+	ManifestSHA256   string `json:"manifest_sha256" pattern:"^[0-9a-f]{64}$"`
+	ManifestBytes    int64  `json:"manifest_bytes" minimum:"1"`
+	ProducedAt       string `json:"produced_at" format:"date-time"`
+	TranscriptSHA256 string `json:"transcript_sha256" pattern:"^[0-9a-f]{64}$"`
+	TranscriptBytes  int64  `json:"transcript_bytes" minimum:"1"`
+	StructuredSHA256 string `json:"structured_sha256" pattern:"^[0-9a-f]{64}$"`
+	StructuredBytes  int64  `json:"structured_bytes" minimum:"1"`
+}
+
+// SuppliedOCRPublicationReceipt is the durable identity returned after an
+// authenticated supplied-evidence publication or exact idempotent retry.
+type SuppliedOCRPublicationReceipt struct {
+	Status              string `json:"status" enum:"added,skipped"`
+	NodeID              int64  `json:"node_id" minimum:"1"`
+	ContentVersionID    string `json:"content_version_id" format:"uuid"`
+	SourceSHA256        string `json:"source_sha256" pattern:"^[0-9a-f]{64}$"`
+	SubmissionKey       string `json:"submission_key" pattern:"^[0-9a-f]{64}$"`
+	MaterialChecksum    string `json:"material_checksum" pattern:"^[0-9a-f]{64}$"`
+	BuildID             string `json:"build_id" pattern:"^[0-9a-f]{64}$"`
+	AttachmentID        string `json:"attachment_id" pattern:"^[0-9a-f]{64}$"`
+	LexicalGenerationID string `json:"lexical_generation_id" pattern:"^[0-9a-f]{64}$"`
+	EvidenceChecksum    string `json:"evidence_checksum" pattern:"^[0-9a-f]{64}$"`
+}
+
 // ContentReplacementReceipt proves which bytes the daemon received and which
 // immutable head the optimistic replacement installed.
 type ContentReplacementReceipt struct {

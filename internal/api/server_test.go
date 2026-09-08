@@ -24,6 +24,7 @@ import (
 	"go.kenn.io/docbank/internal/config"
 	"go.kenn.io/docbank/internal/daemonauth"
 	"go.kenn.io/docbank/internal/store"
+	"go.kenn.io/docbank/internal/suppliedocr"
 )
 
 // testStore bundles the store and blob store the test server was built
@@ -70,6 +71,8 @@ func newTestServer(t *testing.T, mutate func(*api.Deps)) (*httptest.Server, *tes
 		WebURL: testWebURL,
 	}
 	d.Cfg.Server.APIKey = testAPIKey
+	d.SuppliedOCR, err = suppliedocr.New(s, blobs)
+	require.NoError(t, err)
 	if mutate != nil {
 		mutate(&d)
 	}

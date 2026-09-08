@@ -24,7 +24,8 @@ func TestOpenAPIDocumentOffline(t *testing.T) {
 		"assignTagPath", "unassignTagPath",
 		"previewAuditEnrollment", "enableAudit", "auditStatus", "auditNodeHistory", "verifyAudit",
 		"search", "createNode", "moveNode", "movePath", "trashNode", "trashPath", "restoreNode",
-		"storageStatus", "storagePack", "storageRepack", "ingest", "uploadFile", "listTrash", "emptyTrash", "gc", "verify",
+		"storageStatus", "storagePack", "storageRepack", "ingest", "uploadFile", "publishSuppliedOCR",
+		"listTrash", "emptyTrash", "gc", "verify",
 		"initBackupRepository", "createBackupSnapshot", "listBackupSnapshots", "listJobs"} {
 		assert.Contains(t, doc, op, "operation missing from OpenAPI doc")
 	}
@@ -151,6 +152,27 @@ func TestOpenAPIDeclaresDigestCheckedUpload(t *testing.T) {
 	require.NotNil(t, revert.RequestBody)
 	assert.Contains(t, revert.RequestBody.Content, "application/json")
 	assert.NotNil(t, revert.Responses["200"])
+}
+
+func TestOpenAPIDeclaresSuppliedOCRPublication(t *testing.T) {
+	doc := api.NewOfflineServer().API().OpenAPI()
+	op := doc.Paths["/api/v1/nodes/{id}/supplied-ocr"].Post
+	require.NotNil(t, op)
+	assert.Equal(t, "publishSuppliedOCR", op.OperationID)
+	form := op.RequestBody.Content["multipart/form-data"]
+	require.NotNil(t, form)
+	for _, part := range []string{"metadata", "transcript", "structured"} {
+		assert.Equal(t, "binary", form.Schema.Properties[part].Format)
+		assert.Contains(t, form.Schema.Required, part)
+	}
+	assert.NotNil(t, op.Responses["200"])
+	assert.NotNil(t, op.Responses["201"])
+	metadata := doc.Components.Schemas.Map()["SuppliedOCRPublicationMetadata"]
+	require.NotNil(t, metadata)
+	for _, field := range []string{"content_version_id", "source_sha256", "submission_key",
+		"transcript_sha256", "transcript_bytes", "structured_sha256", "structured_bytes"} {
+		assert.Contains(t, metadata.Properties, field)
+	}
 }
 
 func TestOpenAPIDeclaresMutationPreconditions(t *testing.T) {

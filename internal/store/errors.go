@@ -30,6 +30,9 @@ var (
 	// ErrVersionAlreadyCurrent means a revert selected the node's current head,
 	// which is not a historical transition.
 	ErrVersionAlreadyCurrent = errors.New("content version is already current")
+	// ErrRenditionBuildConflict means one immutable build identity or canonical
+	// policy identity was reused for different rendition material.
+	ErrRenditionBuildConflict = errors.New("rendition build identity conflict")
 	// ErrProvenanceMismatch means an immutable retry named source evidence
 	// that is not an active fact on the existing document.
 	ErrProvenanceMismatch = errors.New("provenance does not match existing content")
