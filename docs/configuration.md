@@ -124,10 +124,11 @@ scan_interval = "5s"
 exclude = [".DS_Store", "cache/"]
 ```
 
-- **`bind_addr`** — the interface the API listens on. Loopback only
-  (`127.0.0.1`, `::1`, `localhost`): the API is plain HTTP, so a
-  non-loopback bind would put the key and vault contents on the wire in
-  cleartext. Reach a remote docbank through an SSH tunnel or VPN.
+- **`bind_addr`** — the interface the API listens on. Loopback
+  (`127.0.0.1`, `::1`, `localhost`) is the default. A specific
+  non-loopback IP requires a persistent `api_key`; wildcard addresses are
+  rejected. The API is plain HTTP, so operators must independently confine
+  any non-loopback listener to a trusted network path.
 - **`api_port`** — `0` picks an ephemeral port; the CLI never needs to
   know it in advance because it discovers the actual bound address from
   the daemon's runtime record.
@@ -136,8 +137,8 @@ exclude = [".DS_Store", "cache/"]
   means "generate an ephemeral key at startup" rather than "no auth
   required" — the generated key is published to same-user clients via
   the runtime record, the same mechanism the shutdown token already
-  uses. Set it only when a client can't read the runtime record (an SSH
-  tunnel from another machine).
+  uses. A persistent value is required for a non-loopback listener or when
+  a client cannot read the runtime record.
 - **`idle_timeout`** — how long a background daemon waits without
   requests before exiting on its own. `"0"` disables idle shutdown.
   Foreground `docbank daemon run` ignores this and never idles out.
@@ -356,13 +357,12 @@ encryption and access policy.
 Validated once, at daemon startup — a misconfiguration fails `docbank
 daemon run` immediately rather than silently serving insecurely:
 
-- A **loopback** `bind_addr` (`127.0.0.1`, `::1`, `localhost`) is the
-  only accepted value. An empty `api_key` is fine there: the daemon
-  generates one at startup instead.
-- Every non-loopback address — wildcard, private-network, or public,
-  keyed or not — is rejected. The API is plain HTTP; a key sent in
-  cleartext is not protection. Remote access goes through an SSH tunnel
-  or VPN to the loopback listener until the daemon grows TLS.
+- A **loopback** `bind_addr` (`127.0.0.1`, `::1`, `localhost`) accepts an
+  empty `api_key`; the daemon generates one at startup instead.
+- A specific non-loopback IP is accepted only with a nonempty persistent
+  `api_key`. Wildcard addresses (`0.0.0.0`, `::`) are always rejected.
+  Because the API is plain HTTP, the operator is responsible for restricting
+  the listener with the host firewall or another trusted network boundary.
 
 ## Environment variables
 

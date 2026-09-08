@@ -422,13 +422,9 @@ func resolveBackupRepo(root string, backup *BackupConfig) error {
 	return nil
 }
 
-// Validate enforces the bind policy: loopback only. The API is plain HTTP,
-// so any non-loopback bind — even a keyed, private-network one — would put
-// the API key and vault contents on the wire in cleartext. Remote access
-// goes through an SSH tunnel or VPN to the loopback listener until the
-// daemon grows TLS. An unset api_key stays valid: the daemon generates and
-// self-publishes an ephemeral key rather than serving unauthenticated (see
-// cmd/docbank/daemon.go).
+// Validate enforces the bind policy. Loopback remains the keyless default;
+// an explicit non-wildcard IP requires a persistent API key. The daemon never
+// serves an external listener with its generated per-run key.
 func (c Config) Validate() error {
 	if c.Backup.ZstdLevel != 0 && (c.Backup.ZstdLevel < 1 || c.Backup.ZstdLevel > 19) {
 		return fmt.Errorf("[backup] zstd_level %d: want 0 or 1-19", c.Backup.ZstdLevel)
@@ -457,11 +453,17 @@ func (c Config) Validate() error {
 	if isLoopbackHost(host) {
 		return nil
 	}
-	if net.ParseIP(host) == nil {
+	ip := net.ParseIP(host)
+	if ip == nil {
 		return fmt.Errorf("[server] bind_addr %q: not an IP address or localhost", host)
 	}
-	return fmt.Errorf("[server] bind_addr %q: the API is plain HTTP, so binds are "+
-		"loopback-only; reach a remote docbank through an SSH tunnel or VPN", host)
+	if ip.IsUnspecified() {
+		return fmt.Errorf("[server] bind_addr %q: wildcard binds are not allowed", host)
+	}
+	if c.Server.APIKey == "" {
+		return fmt.Errorf("[server] bind_addr %q: a non-loopback bind requires a persistent api_key", host)
+	}
+	return nil
 }
 
 var storeBindingNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)

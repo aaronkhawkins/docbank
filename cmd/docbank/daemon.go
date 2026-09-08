@@ -35,6 +35,7 @@ import (
 	internalmaintenance "go.kenn.io/docbank/internal/maintenance"
 	"go.kenn.io/docbank/internal/processing"
 	"go.kenn.io/docbank/internal/store"
+	"go.kenn.io/docbank/internal/suppliedocr"
 	"go.kenn.io/docbank/internal/vectorworker"
 	docweb "go.kenn.io/docbank/internal/web"
 )
@@ -347,10 +348,15 @@ func runServe(ctx context.Context) (retErr error) {
 	stop := func() { stopOnce.Do(func() { close(stopCh) }) }
 
 	tracker := api.NewActivityTracker()
+	suppliedOCRPublisher, err := suppliedocr.New(s, blobs)
+	if err != nil {
+		return fmt.Errorf("configuring supplied OCR publisher: %w", err)
+	}
 	srv := api.NewServer(api.Deps{
 		Store: s, Blobs: blobs, VaultRoot: layout.Root, Cfg: cfg, Logger: logger,
 		StartedAt: time.Now(), ShutdownToken: shutdownToken, Shutdown: stop, Tracker: tracker,
 		Jobs: jobSupervisor, Gate: operationGate, WebURL: webURL, BlobRegistry: blobRegistry,
+		SuppliedOCR: suppliedOCRPublisher,
 	})
 	defer srv.Close()
 	newHTTPServer := func() *http.Server {

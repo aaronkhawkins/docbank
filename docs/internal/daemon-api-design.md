@@ -41,11 +41,11 @@ protocol revision, shutdown token, and effective API key. Create-time prevents
 a stale record from targeting a reused PID. The record is runtime state, not
 archive state.
 
-The daemon always has an API key. An empty configured key means generate a new
-per-run key and publish it in the same-user runtime record; it never means
-unauthenticated. Binds are loopback-only because plain HTTP on a LAN would
-expose both key and content. Remote access terminates an external secure tunnel
-at loopback rather than expanding the daemon's trust model.
+The daemon always has an API key. On loopback, an empty configured key means
+generate a new per-run key and publish it in the same-user runtime record; it
+never means unauthenticated. A specific non-loopback bind requires a persistent
+key, wildcard binds are rejected, and the operator must independently confine
+the plain-HTTP listener to a trusted network path.
 
 Auth-exempt health, ping, docs, and OpenAPI routes establish discovery and
 contract access only. Every data route and the hidden shutdown route requires

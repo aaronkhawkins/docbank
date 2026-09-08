@@ -39,7 +39,8 @@ the document entered the vault.
 
 The browser is another client of the authenticated HTTP API. It does not open
 SQLite or the blob store, and it has no private route that the CLI or an agent
-cannot use. The daemon remains loopback-only.
+cannot use. Browser-session issuance remains confined to its fresh loopback
+origin even when the API uses an explicitly configured keyed address.
 
 ![The Docbank web application showing a synthetic vault tree and the selected document's authority.](https://raw.githubusercontent.com/kenn-io/docbank/docs-assets/screenshots/v0.12.0/web-vault-browser.png)
 

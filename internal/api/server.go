@@ -46,15 +46,26 @@ type Deps struct {
 	Cfg           config.Config
 	Logger        *slog.Logger // nil → slog.Default()
 	StartedAt     time.Time
-	ShutdownToken string           // "" disables the shutdown route
-	Shutdown      func()           // called (async) by the shutdown route
-	Tracker       *ActivityTracker // nil → no idle tracking
-	Jobs          *jobs.Supervisor // nil → no registered background jobs
-	Gate          *OperationGate   // nil → a server-private gate
-	VerifyPage    VerifyPageFunc   // nil → shared bounded maintenance service
-	RepackPage    RepackPageFunc   // nil → shared bounded maintenance service
-	WebURL        string           // fresh per-daemon loopback origin; empty disables browser sessions
-	BlobRegistry  *blob.Registry   // nil keeps storage-registry routes read-only to the primary
+	ShutdownToken string               // "" disables the shutdown route
+	Shutdown      func()               // called (async) by the shutdown route
+	Tracker       *ActivityTracker     // nil → no idle tracking
+	Jobs          *jobs.Supervisor     // nil → no registered background jobs
+	Gate          *OperationGate       // nil → a server-private gate
+	VerifyPage    VerifyPageFunc       // nil → shared bounded maintenance service
+	RepackPage    RepackPageFunc       // nil → shared bounded maintenance service
+	WebURL        string               // fresh per-daemon loopback origin; empty disables browser sessions
+	BlobRegistry  *blob.Registry       // nil keeps storage-registry routes read-only to the primary
+	SuppliedOCR   SuppliedOCRPublisher // nil leaves the optional publication route unavailable
+}
+
+// SuppliedOCRPublisher is the narrow daemon dependency behind the supplied
+// evidence route. Its implementation may use the processing package without
+// coupling the API package back to that higher layer.
+type SuppliedOCRPublisher interface {
+	PublishSuppliedOCR(
+		ctx context.Context, nodeID int64, metadata SuppliedOCRPublicationMetadata,
+		transcript, structured []byte,
+	) (SuppliedOCRPublicationReceipt, error)
 }
 
 // Server is docbank's HTTP API: a huma-described /api/v1 surface plus a
@@ -135,6 +146,7 @@ func NewServer(d Deps) *Server {
 	registerJobRoutes(humaAPI, d)
 	registerWatchRoutes(humaAPI, d)
 	registerUploadRoute(mux, humaAPI, d, g)
+	registerSuppliedOCRRoute(mux, humaAPI, d, g)
 	registerContentWriteRoute(mux, humaAPI, d, g)
 	registerContentRevertRoute(humaAPI, d, g)
 	registerContentPruneRoute(humaAPI, d, g)
