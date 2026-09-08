@@ -559,10 +559,10 @@ against the daemon's effective key. The daemon always has one: with
 publishes it, inside the owner-private `$DOCBANK_HOME`, through the same runtime
 record the CLI already uses for discovery — readable only by the
 vault's owner, never sent over the network unencrypted, never logged.
-A specific non-loopback bind is allowed only with a persistent key; wildcard
-and keyless external binds are rejected. Because the API is plain HTTP, the
-operator must independently confine an external listener to a trusted network
-path (see [Configuration](../configuration.md)). `/health`,
+Binds are loopback-only: the API is plain HTTP, so a non-loopback bind
+would expose the key and vault contents in cleartext, and `docbank
+daemon run` refuses to start on one — remote access goes through an SSH
+tunnel or VPN (see [Configuration](../configuration.md)). `/health`,
 `/api/ping`, `/docs`, the OpenAPI documents, and the static web application at
 `/` and `/assets/` are auth-exempt; everything else, including the shutdown route,
 requires the key.

@@ -88,10 +88,8 @@ Instructions for autonomous coding agents working in this repository.
   the public embedded API to own separately rooted vaults in-process. Embedded
   and daemon ownership share the same exclusive hierarchy lock; never create a
   privileged path into a daemon-owned vault.
-- The daemon always enforces an API key (ephemeral per-run on loopback when
-  none is configured, published via the runtime record). Loopback is the
-  default; a specific non-loopback bind requires a persistent key, and
-  wildcard binds are rejected.
+- The daemon always enforces an API key (ephemeral per-run when none is
+  configured, published via the runtime record). Binds are loopback-only.
 - Packed storage is managed, not a user-selected format. The ordinary operator
   surface is status, pack, and repack. Do not expose Kit's unpack primitive as
   a general API or CLI command; reserve it for tests, migrations, or a

@@ -94,9 +94,8 @@ design-specific checks are:
 
 ## Review posture
 
-Review the actual trust and scale model: one user, one daemon, personal-archive
-scale, and either loopback or an explicitly configured keyed IP behind an
-operator-managed network boundary. Focus security review on authentication
-gaps, non-loopback exposure, data loss, stale compatibility, crash ordering,
-and incorrect authority boundaries—not multi-tenant controls the product does
-not claim.
+Review the actual trust and scale model: local, loopback-only, one user, one
+daemon, personal-archive scale. Focus security review on authentication gaps,
+non-loopback exposure, data loss, stale compatibility, crash ordering, and
+incorrect authority boundaries—not multi-tenant controls the product does not
+claim.
