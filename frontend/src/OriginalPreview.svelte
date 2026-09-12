@@ -4,6 +4,7 @@
   import { EmptyState, Spinner } from "@kenn-io/kit-ui";
   import { APIError, type ContentVersion, type Node } from "./api.js";
   import { formatBytes } from "./format.js";
+  import PdfPreview from "./PdfPreview.svelte";
   import {
     loadOriginalPreview,
     MAX_INLINE_PREVIEW_BYTES,
@@ -24,6 +25,7 @@
 
   const supportedKind = $derived(originalPreviewKind(version.mime_type, version.size));
   let objectURL = $state("");
+  let original = $state<Blob | null>(null);
   let progress = $state(0);
   let error = $state("");
   let generation = 0;
@@ -55,10 +57,10 @@
         },
       );
       if (request !== generation) {
-        URL.revokeObjectURL(loaded);
         return;
       }
-      objectURL = loaded;
+      original = loaded;
+      if (supportedKind === "image") objectURL = URL.createObjectURL(loaded);
     } catch (cause) {
       if (request !== generation || (cause instanceof DOMException && cause.name === "AbortError")) {
         return;
@@ -87,7 +89,7 @@
   <EmptyState title="Original preview unavailable" description={error}>
     {#snippet icon()}<FileTextIcon size="22" />{/snippet}
   </EmptyState>
-{:else if !objectURL}
+{:else if !original}
   <p class="preview-loading" aria-live="polite">
     <Spinner size={16} /> Verifying original…
     {#if progress > 0}<span>{formatBytes(progress)} of {formatBytes(version.size)}</span>{/if}
@@ -97,7 +99,7 @@
     <img src={objectURL} alt={`Original ${node.name}`} />
   </div>
 {:else}
-  <iframe src={`${objectURL}#view=Fit&navpanes=0`} title={`Original ${node.name}`}></iframe>
+  <PdfPreview blob={original} />
 {/if}
 
 <style>
@@ -132,17 +134,7 @@
     object-fit: contain;
   }
 
-  iframe {
-    display: block;
-    width: 100%;
-    height: min(72vh, 820px);
-    min-height: 520px;
-    border: 0;
-    background: white;
-  }
-
   @media (max-width: 760px) {
-    iframe { min-height: 440px; }
     .preview-loading, .image-stage { min-height: 280px; }
   }
 </style>

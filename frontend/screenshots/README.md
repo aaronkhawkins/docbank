@@ -31,10 +31,10 @@ the displayed bytes against the originals, and capture desktop and phone
 layouts. Generated images remain untracked unless an inspected capture is
 selected as a PR attachment.
 
-The preview cases use full Chromium for its native PDF viewer and disable
-`PdfOopif` in the screenshot harness. With that Chromium feature enabled, the
-PDF plugin surface can be clipped to 300px in captures even though the viewer
-frame has the correct dimensions. This setting does not change the application.
+The preview cases run without a native PDF plugin, matching embedded browsers.
+They assert that PDF.js paints nonblank canvas pixels, can move between two
+pages, and retains the exact verified source bytes. Merely finding an iframe
+does not prove that a document is visible.
 
 Pass ordinary Playwright arguments after `--` to select a case:
 

@@ -320,7 +320,8 @@ func TestWebApplication(t *testing.T) {
 	assert.Contains(t, resp.Header.Get("Content-Security-Policy"),
 		"img-src 'self' data: blob:")
 	assert.Contains(t, resp.Header.Get("Content-Security-Policy"),
-		"frame-src 'self' blob:")
+		"worker-src 'self'; font-src 'self' blob:; frame-src 'none'")
+	assert.Contains(t, resp.Header.Get("Content-Security-Policy"), "script-src 'self' 'wasm-unsafe-eval'")
 	assert.Contains(t, resp.Header.Get("Content-Security-Policy"), "object-src 'none'")
 	assert.Equal(t, "no-referrer", resp.Header.Get("Referrer-Policy"))
 	assert.Contains(t, strings.ToLower(body), "<!doctype html>")

@@ -11,13 +11,7 @@ const exec = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const screenshots = path.join(root, ".superpowers/screenshots");
 
-// The full browser includes the native PDF viewer. Disable its OOPIF path in
-// this capture harness: Chromium otherwise clips the plugin surface to 300px.
-test.use({
-  channel: "chromium",
-  launchOptions: { args: ["--disable-features=PdfOopif"] },
-});
-
+// Exercise the embedded-browser case: no native PDF plugin is available.
 test.describe("Original document previews", () => {
   let workspace = "";
   let vault = "";
@@ -59,8 +53,14 @@ test.describe("Original document previews", () => {
           <tr><td>Document owner</td><td>Sample household</td></tr></table>
         <footer>Fictional data for testing DocBank original-document previews.</footer>
       </body></html>`);
-      originals.set("registration.pdf", await source.pdf({ format: "Letter", printBackground: true }));
       originals.set("registration.png", await source.screenshot({ fullPage: true }));
+      await source.evaluate(() => {
+        const page = document.createElement("section");
+        page.style.breakBefore = "page";
+        page.innerHTML = "<h1>Second page</h1><p>Additional fictional registration details.</p>";
+        document.body.append(page);
+      });
+      originals.set("registration.pdf", await source.pdf({ format: "Letter", printBackground: true }));
     } finally {
       await source.close();
     }
@@ -86,15 +86,15 @@ test.describe("Original document previews", () => {
   for (const [name, width] of [["registration.pdf", 1440], ["registration.png", 390]] as const) {
     test(`${name} at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 960 });
-      // Observe the real blob handed to the renderer. Chromium's inspector
-      // can omit attachment response bodies; no API response is substituted.
+      // Observe verified response bytes without replacing any API response.
       await page.addInitScript(() => {
-        const createObjectURL = URL.createObjectURL.bind(URL);
-        URL.createObjectURL = (value) => {
-          if (value instanceof Blob) {
-            (window as Window & { previewBlob?: Blob }).previewBlob = value;
+        const readBlob = Response.prototype.blob;
+        Response.prototype.blob = async function () {
+          const blob = await readBlob.call(this);
+          if (this.url.includes("/api/daemon/web-download/file?ticket=")) {
+            (window as Window & { previewBlob?: Blob }).previewBlob = blob;
           }
-          return createObjectURL(value);
+          return blob;
         };
       });
       const errors: string[] = [];
@@ -114,10 +114,21 @@ test.describe("Original document previews", () => {
       expect(response.ok()).toBe(true);
       const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
       if (name.endsWith(".pdf")) {
-        await expect(page.locator("iframe")).toBeVisible();
-        await expect(page.locator("iframe")).toHaveAttribute("src", /^blob:/);
-        // Native PDF painting happens inside a closed browser shadow tree.
-        await page.waitForTimeout(3000);
+        expect(await page.evaluate(() => navigator.pdfViewerEnabled)).toBe(false);
+        const preview = page.getByRole("img", { name: "PDF page 1", exact: true });
+        await expect(preview).toBeVisible();
+        const pixels = () => page.locator("canvas").evaluate(canvas => {
+          const surface = canvas as HTMLCanvasElement;
+          const image = surface.getContext("2d")!.getImageData(0, 0, surface.width, surface.height);
+          return Array.from(image.data).filter((value, index) => index % 4 !== 3 && value < 200).length;
+        });
+        expect(await pixels()).toBeGreaterThan(1000);
+        await page.getByRole("button", { name: "Next", exact: true }).click();
+        await expect(page.getByRole("img", { name: "PDF page 2", exact: true })).toBeVisible();
+        await expect(page.getByText("Page 2 of 2", { exact: true })).toBeVisible();
+        expect(await pixels()).toBeGreaterThan(1000);
+        await page.getByRole("button", { name: "Previous", exact: true }).click();
+        await expect(preview).toBeVisible();
       } else {
         const preview = page.locator("img");
         await expect(preview).toBeVisible();

@@ -7,7 +7,9 @@
     "node": "^20.19.0 || ^22.18.0 || >=24.11.0"
   },
   "scripts": {
+    "predev": "node scripts/copy-pdf-assets.mjs",
     "dev": "vp dev",
+    "prebuild": "node scripts/copy-pdf-assets.mjs",
     "build": "vp build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "check:kit-ui": "kit-ui-check src",
@@ -19,6 +21,7 @@
     "@kenn-io/kit-ui": "git+https://github.com/kenn-io/kit-ui.git#b35e4ca7df66969f4650327d6e315986afef8716",
     "@lucide/svelte": "1.24.0",
     "@noble/hashes": "^2.2.0",
+    "pdfjs-dist": "6.3.289",
     "svelte": "5.56.4"
   },
   "devDependencies": {
