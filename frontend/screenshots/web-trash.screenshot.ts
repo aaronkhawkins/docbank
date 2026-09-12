@@ -419,6 +419,8 @@ test.describe("Docbank web screenshots", () => {
     await expect(
       page.getByRole("heading", { name: "quarterly-tax-report.txt" }),
     ).toBeVisible();
+    await page.getByRole("tab", { name: "OCR", exact: true }).click();
+    await page.getByText("Technical details", { exact: true }).click();
     await expect(page.getByText("Historical", { exact: true })).toBeVisible();
     await expect(page.getByText("Synthetic quarterly tax report", { exact: false })).toBeVisible();
     await expect(page.getByRole("button", { name: /Download original/ })).toBeVisible();

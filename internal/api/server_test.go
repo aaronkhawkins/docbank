@@ -317,6 +317,11 @@ func TestWebApplication(t *testing.T) {
 	assert.Equal(t, "no-store", resp.Header.Get("Cache-Control"))
 	assert.Contains(t, resp.Header.Get("Content-Security-Policy"),
 		"connect-src 'self' ws://docbank-0123456789abcdef0123456789abcdef.localhost:43210")
+	assert.Contains(t, resp.Header.Get("Content-Security-Policy"),
+		"img-src 'self' data: blob:")
+	assert.Contains(t, resp.Header.Get("Content-Security-Policy"),
+		"frame-src 'self' blob:")
+	assert.Contains(t, resp.Header.Get("Content-Security-Policy"), "object-src 'none'")
 	assert.Equal(t, "no-referrer", resp.Header.Get("Referrer-Policy"))
 	assert.Contains(t, strings.ToLower(body), "<!doctype html>")
 

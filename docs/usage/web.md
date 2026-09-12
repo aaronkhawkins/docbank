@@ -43,9 +43,16 @@ A document link has the form
 `/documents/<node-id>/versions/<version-id>`. It opens that retained version
 even after the live document is renamed or replaced. The page shows the
 document's current name and path, labels the saved version as current or
-historical, offers a verified download of its original bytes, and displays its
-active OCR or transcript with processing hashes when one has been published.
-The provenance button opens the document's existing ingest history.
+historical, and opens the **Original** tab first. PDFs and supported images can
+be viewed directly on the page. The **OCR** tab shows the saved version's active
+OCR or transcript when one has been published. **Download original** remains
+available, including for formats or sizes that cannot be previewed. Expand
+**Technical details** to inspect version and processing metadata. The provenance
+button opens the document's existing ingest history.
+
+Previews use the same verified original bytes as downloads. They stay in the
+browser's memory while open; locking the viewer clears the preview. A preview
+does not create a rendition or change the document.
 
 When no CLI-created session is present in the URL fragment, the page requests
 a browser session from the same origin. A reverse proxy can authorize that
