@@ -48,7 +48,7 @@ function viewer(offset: number) {
       build_id: buildID,
       source_sha256: sourceHash,
       evidence_checksum: "e".repeat(64),
-      completeness: "full",
+      completeness: "complete",
       build_truncated: false,
       warnings: [],
       published_at: "2026-07-27T12:05:00Z",

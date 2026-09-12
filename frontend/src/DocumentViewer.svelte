@@ -209,7 +209,7 @@
         <Card level="raised" title="Processing details" eyebrow="EXTRACTED TEXT">
           {#if record.rendition}
             <dl>
-              <div><dt>Evidence</dt><dd><Chip size="xs" tone={record.rendition.completeness === "full" ? "success" : "warning"}>{record.rendition.completeness}</Chip></dd></div>
+              <div><dt>Evidence</dt><dd><Chip size="xs" tone={record.rendition.completeness === "complete" ? "success" : "warning"}>{record.rendition.completeness}</Chip></dd></div>
               <div><dt>Published</dt><dd>{formatDate(record.rendition.published_at)}</dd></div>
               <div class="identity"><dt>Build</dt><dd><code>{record.rendition.build_id}</code><CopyButton text={record.rendition.build_id} ariaLabel="Copy OCR build ID" /></dd></div>
               <div class="identity"><dt>Evidence checksum</dt><dd><code>{record.rendition.evidence_checksum}</code><CopyButton text={record.rendition.evidence_checksum} ariaLabel="Copy evidence checksum" /></dd></div>

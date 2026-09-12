@@ -71,7 +71,7 @@ export interface DocumentViewerRendition {
   build_id: string;
   source_sha256: string;
   evidence_checksum: string;
-  completeness: "full" | "partial" | "unknown";
+  completeness: "complete" | "partial" | "degraded_provenance";
   build_truncated: boolean;
   warnings: string[];
   published_at: string;
