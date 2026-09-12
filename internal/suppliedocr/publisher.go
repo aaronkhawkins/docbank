@@ -33,7 +33,7 @@ func (p *Publisher) PublishSuppliedOCR(
 	ctx context.Context, nodeID int64, metadata api.SuppliedOCRPublicationMetadata,
 	transcript, structured []byte,
 ) (api.SuppliedOCRPublicationReceipt, error) {
-	candidate, err := processing.BuildSuppliedOCRPublicationCandidate(processing.SuppliedOCRPublicationInput{
+	input := processing.SuppliedOCRPublicationInput{
 		VaultID: p.catalog.VaultID(), ContentVersionID: metadata.ContentVersionID,
 		SubmissionKey: metadata.SubmissionKey,
 		Result: document.SuppliedOCRResult{
@@ -43,7 +43,8 @@ func (p *Publisher) PublishSuppliedOCR(
 			ProducedAt: metadata.ProducedAt, SourceSHA256: metadata.SourceSHA256,
 			Text: string(transcript), Structured: structured,
 		},
-	})
+	}
+	candidate, err := processing.BuildSuppliedOCRPublicationCandidate(input)
 	if err != nil {
 		return api.SuppliedOCRPublicationReceipt{}, api.NewError(
 			http.StatusUnprocessableEntity, "validation", err.Error())
@@ -57,6 +58,18 @@ func (p *Publisher) PublishSuppliedOCR(
 	}
 	if existingErr != nil && !errors.Is(existingErr, store.ErrNotFound) {
 		return api.SuppliedOCRPublicationReceipt{}, existingErr
+	}
+	if existingErr == nil && existing.RenditionRequestFingerprint != candidate.Staged.Build.RenditionRequestFingerprint {
+		// An exact legacy submission keeps its immutable request/profile identity.
+		// The material and submission key were already verified above.
+		input.LegacyRequestIdentity = true
+		legacy, legacyErr := processing.BuildSuppliedOCRPublicationCandidate(input)
+		if legacyErr != nil {
+			return api.SuppliedOCRPublicationReceipt{}, legacyErr
+		}
+		if existing.RenditionRequestFingerprint == legacy.Staged.Build.RenditionRequestFingerprint {
+			candidate = legacy
+		}
 	}
 	wasExact := false
 	active, activeErr := p.catalog.ActiveRendition(ctx, metadata.ContentVersionID,

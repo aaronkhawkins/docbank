@@ -15,7 +15,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.kenn.io/docbank/document"
 	"go.kenn.io/docbank/internal/api"
+	"go.kenn.io/docbank/internal/processing"
 )
 
 type suppliedOCRTestInput struct {
@@ -233,6 +235,60 @@ func TestSuppliedOCRPublicationIsIdempotentAndConflictsOnChangedMaterial(t *test
 	require.NoError(t, err)
 	assert.Equal(t, blobsBeforeConflict, blobsAfterConflict,
 		"a changed retry must fail before staging derivative blob authority")
+}
+
+func TestSuppliedOCRPublicationsForIdenticalSourcesRemainIndependent(t *testing.T) {
+	ts, s := newTestServer(t, nil)
+	first := createFileWithContent(t, ts, s, "/first.pdf", "identical source bytes")
+	second := createFileWithContent(t, ts, s, "/second.pdf", "identical source bytes")
+	for _, node := range []struct {
+		id                 int64
+		version, hash, key string
+	}{
+		{first.ID, first.CurrentVersionID, first.BlobHash, "first-submission"},
+		{second.ID, second.CurrentVersionID, second.BlobHash, "second-submission"},
+		{second.ID, second.CurrentVersionID, second.BlobHash, "another-submission"},
+	} {
+		in := suppliedOCRFixtureInput(node.id, node.version, node.hash)
+		in.submissionKey = testHash(node.key)
+		resp, body := sendSuppliedOCR(t, ts.URL, ts.Client(), in, nil)
+		require.Equal(t, http.StatusCreated, resp.StatusCode, body)
+		resp, body = sendSuppliedOCR(t, ts.URL, ts.Client(), in, nil)
+		require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	}
+}
+
+func TestSuppliedOCRExactLegacyRetryPreservesPublishedIdentity(t *testing.T) {
+	ts, s := newTestServer(t, nil)
+	node := createFileWithContent(t, ts, s, "/legacy.pdf", "legacy source bytes")
+	in := suppliedOCRFixtureInput(node.ID, node.CurrentVersionID, node.BlobHash)
+	encoded, err := json.Marshal(suppliedOCRMetadata(in))
+	require.NoError(t, err)
+	var metadata api.SuppliedOCRPublicationMetadata
+	require.NoError(t, json.Unmarshal(encoded, &metadata))
+	legacy, err := processing.BuildSuppliedOCRPublicationCandidate(processing.SuppliedOCRPublicationInput{
+		VaultID: s.VaultID(), ContentVersionID: node.CurrentVersionID,
+		SubmissionKey: in.submissionKey, LegacyRequestIdentity: true,
+		Result: document.SuppliedOCRResult{
+			Family: metadata.Family, Engine: metadata.Engine, EngineVersion: metadata.EngineVersion,
+			Model: metadata.Model, Recipe: metadata.Recipe, ManifestSHA256: metadata.ManifestSHA256,
+			ManifestBytes: metadata.ManifestBytes, ProducedAt: metadata.ProducedAt,
+			SourceSHA256: metadata.SourceSHA256, Text: string(in.transcript), Structured: in.structured,
+		},
+	})
+	require.NoError(t, err)
+	publisher, err := processing.NewArtifactPublisher(s.Store, s.Blobs)
+	require.NoError(t, err)
+	published, err := publisher.PublishRendition(t.Context(), legacy.Staged)
+	require.NoError(t, err)
+	resp, body := sendSuppliedOCR(t, ts.URL, ts.Client(), in, nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	var receipt api.SuppliedOCRPublicationReceipt
+	require.NoError(t, json.Unmarshal([]byte(body), &receipt))
+	assert.Equal(t, "skipped", receipt.Status)
+	assert.Equal(t, published.BuildID, receipt.BuildID)
+	assert.Equal(t, published.AttachmentID, receipt.AttachmentID)
+	assert.Equal(t, published.LexicalGeneration.ID, receipt.LexicalGenerationID)
 }
 
 func TestSuppliedOCRPublicationRejectsArtifactDigestMismatch(t *testing.T) {
