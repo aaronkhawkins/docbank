@@ -320,6 +320,13 @@ func TestWebApplication(t *testing.T) {
 	assert.Equal(t, "no-referrer", resp.Header.Get("Referrer-Policy"))
 	assert.Contains(t, strings.ToLower(body), "<!doctype html>")
 
+	resp, body = get(t, ts,
+		"/documents/42/versions/11111111-1111-4111-8111-111111111111", nil)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, strings.ToLower(body), "<!doctype html>")
+	resp, _ = get(t, ts, "/documents/nope/versions/not-a-version", nil)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+
 	off := func(d *api.Deps) { d.Cfg.Web.Enabled = false }
 	ts2, _ := newTestServer(t, off)
 	resp, _ = get(t, ts2, "/", nil)

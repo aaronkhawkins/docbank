@@ -52,6 +52,41 @@ export interface ContentVersionPage {
   offset: number;
 }
 
+export interface DocumentViewerTarget {
+  nodeID: number;
+  versionID: string;
+}
+
+export interface DocumentViewerTextSegment {
+  id: string;
+  unit_id: string;
+  order: number;
+  char_start: number;
+  char_end: number;
+  checksum: string;
+  text: string;
+}
+
+export interface DocumentViewerRendition {
+  build_id: string;
+  source_sha256: string;
+  evidence_checksum: string;
+  completeness: "full" | "partial" | "unknown";
+  build_truncated: boolean;
+  warnings: string[];
+  published_at: string;
+  segments: DocumentViewerTextSegment[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface DocumentViewer {
+  node: Node;
+  version: ContentVersion;
+  rendition?: DocumentViewerRendition;
+}
+
 export interface ProvenanceFact {
   identity: string;
   node_id: number;
@@ -347,6 +382,19 @@ export interface BrowserSession {
   uploadSecret: string;
 }
 
+const documentViewerPath =
+  /^\/documents\/([1-9][0-9]*)\/versions\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
+
+export function parseDocumentViewerPath(
+  pathname: string = window.location.pathname,
+): DocumentViewerTarget | null {
+  const match = documentViewerPath.exec(pathname);
+  if (!match) return null;
+  const nodeID = Number(match[1]);
+  if (!Number.isSafeInteger(nodeID) || nodeID < 1) return null;
+  return { nodeID, versionID: match[2] };
+}
+
 export function takeFragmentSession(
   location: Location = window.location,
   history: History = window.history,
@@ -404,6 +452,30 @@ export async function revokeSession(session: string): Promise<void> {
   await requestJSON<void>("/api/daemon/web-session", session, { method: "DELETE" });
 }
 
+export async function bootstrapBrowserSession(): Promise<BrowserSession> {
+  const response = await fetch("/api/daemon/web-session", {
+    method: "POST",
+    headers: { Accept: "application/json" },
+    credentials: "same-origin",
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    const problem = await decodeProblem(response);
+    const detail = problem.detail || problem.title || `HTTP ${response.status}`;
+    throw new APIError(detail, response.status, problem.code ?? "");
+  }
+  const body = (await response.json()) as {
+    token?: string;
+    upload_secret?: string;
+  };
+  const token = body.token ?? "";
+  const uploadSecret = body.upload_secret ?? "";
+  if (!token || !uploadSecret) {
+    throw new Error("Docbank returned an incomplete browser session");
+  }
+  return { token, uploadSecret };
+}
+
 export async function statPath(session: string, path: string): Promise<Node> {
   return requestJSON<Node>(`/api/v1/path?path=${encodeURIComponent(path)}`, session);
 }
@@ -421,6 +493,20 @@ export async function contentVersions(
 ): Promise<ContentVersionPage> {
   return requestJSON<ContentVersionPage>(
     `/api/v1/nodes/${nodeID}/versions?limit=1000&offset=0`,
+    session,
+  );
+}
+
+export async function documentViewer(
+  session: string,
+  target: DocumentViewerTarget,
+  offset = 0,
+  buildID = "",
+): Promise<DocumentViewer> {
+  const query = new URLSearchParams({ limit: "100", offset: String(offset) });
+  if (buildID) query.set("build_id", buildID);
+  return requestJSON<DocumentViewer>(
+    `/api/v1/nodes/${target.nodeID}/versions/${target.versionID}/viewer?${query.toString()}`,
     session,
   );
 }

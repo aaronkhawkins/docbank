@@ -579,6 +579,31 @@ type RenditionTextPage struct {
 	Offset       int                           `json:"offset" minimum:"0"`
 }
 
+// DocumentViewerRendition is the newest active bounded OCR or transcript
+// projection attached to an exact content version. Provider payloads and raw
+// artifacts are deliberately excluded.
+type DocumentViewerRendition struct {
+	BuildID          string                        `json:"build_id" pattern:"^[0-9a-f]{64}$"`
+	SourceSHA256     string                        `json:"source_sha256" pattern:"^[0-9a-f]{64}$"`
+	EvidenceChecksum string                        `json:"evidence_checksum" pattern:"^[0-9a-f]{64}$"`
+	Completeness     document.EvidenceCompleteness `json:"completeness"`
+	BuildTruncated   bool                          `json:"build_truncated"`
+	Warnings         []string                      `json:"warnings"`
+	PublishedAt      string                        `json:"published_at"`
+	Segments         []RenditionTextSegment        `json:"segments"`
+	Total            int                           `json:"total" minimum:"0"`
+	Limit            int                           `json:"limit" minimum:"1" maximum:"100"`
+	Offset           int                           `json:"offset" minimum:"0"`
+}
+
+// DocumentViewer binds the human-facing document view to one stable node and
+// one retained immutable version.
+type DocumentViewer struct {
+	Node      Node                     `json:"node"`
+	Version   ContentVersion           `json:"version"`
+	Rendition *DocumentViewerRendition `json:"rendition,omitempty"`
+}
+
 // IngestFailure records one source path that failed to import.
 type IngestFailure struct {
 	Path  string `json:"path"`

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,6 +11,7 @@ const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(here, "..", "..");
 const binary = path.join(repositoryRoot, "docbank");
+const screenshotAPIKey = "synthetic-screenshot-api-key";
 const screenshotPath = path.join(
   repositoryRoot,
   ".superpowers",
@@ -76,11 +78,19 @@ const packedStorageScreenshotPath = path.join(
   "screenshots",
   "web-storage-status.png",
 );
+const documentViewerScreenshotPath = path.join(
+  repositoryRoot,
+  ".superpowers",
+  "screenshots",
+  "web-document-viewer.png",
+);
 
 test.describe("Docbank web screenshots", () => {
   let workspace = "";
   let vault = "";
   let webURL = "";
+  let viewerNodeID = 0;
+  let viewerVersionID = "";
 
   async function runDocbank(args: string[]): Promise<string> {
     const result = await execFileAsync(binary, args, {
@@ -154,12 +164,13 @@ test.describe("Docbank web screenshots", () => {
     await rm(searchResultsScreenshotPath, { force: true });
     await rm(retainedVersionScreenshotPath, { force: true });
     await rm(packedStorageScreenshotPath, { force: true });
+    await rm(documentViewerScreenshotPath, { force: true });
     const archive = path.join(workspace, "archive-store");
     await mkdir(vault, { recursive: true, mode: 0o700 });
     await mkdir(archive, { recursive: true, mode: 0o700 });
     await writeFile(
       path.join(vault, "config.toml"),
-      `[store_bindings.archive]\nkind = "filesystem"\npath = ${JSON.stringify(archive)}\npriority = 20\n`,
+      `[server]\napi_key = ${JSON.stringify(screenshotAPIKey)}\n\n[store_bindings.archive]\nkind = "filesystem"\npath = ${JSON.stringify(archive)}\npriority = 20\n`,
       { mode: 0o600 },
     );
     const reports = path.join(workspace, "synthetic", "Reports");
@@ -280,6 +291,27 @@ test.describe("Docbank web screenshots", () => {
       revisedReport,
       "/Reports/quarterly-tax-report.txt",
     ]);
+    const viewerNode = JSON.parse(
+      await runDocbank(["stat", "/Reports/quarterly-tax-report.txt", "--json"]),
+    ) as { id?: unknown };
+    const viewerVersions = JSON.parse(
+      await runDocbank([
+        "versions",
+        "list",
+        "/Reports/quarterly-tax-report.txt",
+        "--json",
+      ]),
+    ) as { items?: Array<{ id?: unknown; blob_hash?: unknown }> };
+    if (
+      typeof viewerNode.id !== "number" ||
+      viewerNode.id < 1 ||
+      typeof viewerVersions.items?.[1]?.id !== "string" ||
+      typeof viewerVersions.items?.[1]?.blob_hash !== "string"
+    ) {
+      throw new Error("synthetic historical document authority is incomplete");
+    }
+    viewerNodeID = viewerNode.id;
+    viewerVersionID = viewerVersions.items[1].id;
     webURL = await runDocbank(["web", "--no-browser"]);
     const browserURL = new URL(webURL);
     const port = Number(browserURL.port);
@@ -296,6 +328,45 @@ test.describe("Docbank web screenshots", () => {
       browserURL.hash === ""
     ) {
       throw new Error("docbank web returned an unexpected browser URL");
+    }
+
+    const transcript = "Synthetic quarterly tax report\nFiling year: 2026";
+    const structured = JSON.stringify({
+      schema_version: 1,
+      markdown: transcript,
+      layout: [{ label: "text", boxes: [[10, 20, 300, 80]] }],
+    });
+    const sha256 = (value: string) =>
+      createHash("sha256").update(value).digest("hex");
+    const metadata = {
+      content_version_id: viewerVersionID,
+      source_sha256: viewerVersions.items[1].blob_hash,
+      submission_key: sha256("synthetic-screenshot-submission"),
+      family: "pdf",
+      engine: "focr",
+      engine_version: "0.8.0",
+      model: "unlimited-ocr.v0.7.0.int8.focrq",
+      recipe: "unlimited-ocr-ffn-int8-attn-bf16-lmhead-bf16-v1",
+      manifest_sha256: sha256("synthetic-screenshot-manifest"),
+      manifest_bytes: 4_157_448_783,
+      produced_at: "2026-09-07T12:34:56.000000000Z",
+      transcript_sha256: sha256(transcript),
+      transcript_bytes: Buffer.byteLength(transcript),
+      structured_sha256: sha256(structured),
+      structured_bytes: Buffer.byteLength(structured),
+    };
+    const form = new FormData();
+    form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "metadata.json");
+    form.append("transcript", new Blob([transcript], { type: "text/markdown; charset=utf-8" }), "transcript.md");
+    form.append("structured", new Blob([structured], { type: "application/json" }), "structured.json");
+    const suppliedOCRURL = new URL(`/api/v1/nodes/${viewerNodeID}/supplied-ocr`, webURL);
+    const publication = await fetch(suppliedOCRURL, {
+      method: "POST",
+      headers: { "X-Api-Key": screenshotAPIKey },
+      body: form,
+    });
+    if (!publication.ok) {
+      throw new Error(`synthetic OCR publication failed: ${publication.status} ${await publication.text()}`);
     }
   });
 
@@ -326,6 +397,36 @@ test.describe("Docbank web screenshots", () => {
       }
     }
     if (workspace) await rm(workspace, { recursive: true, force: true });
+  });
+
+  test("saved document viewer", async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("docbank-theme", "dark");
+    });
+    const viewerURL = new URL(webURL);
+    viewerURL.pathname = `/documents/${viewerNodeID}/versions/${viewerVersionID}`;
+    await page.goto(viewerURL.toString(), { waitUntil: "domcontentloaded" });
+    await page.addStyleTag({
+      content: `
+        *, *::before, *::after {
+          animation-duration: 0.001s !important;
+          animation-delay: 0s !important;
+          transition-duration: 0s !important;
+          caret-color: transparent !important;
+        }
+      `,
+    });
+    await expect(
+      page.getByRole("heading", { name: "quarterly-tax-report.txt" }),
+    ).toBeVisible();
+    await expect(page.getByText("Historical", { exact: true })).toBeVisible();
+    await expect(page.getByText("Synthetic quarterly tax report", { exact: false })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Download original/ })).toBeVisible();
+    await page.screenshot({
+      path: documentViewerScreenshotPath,
+      fullPage: true,
+      animations: "disabled",
+    });
   });
 
   test("trash confirmation", async ({ page }) => {

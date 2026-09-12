@@ -173,6 +173,50 @@ func registerReadRoutes(api huma.API, d Deps) {
 		return &contentVersionOutput{Body: body}, nil
 	})
 
+	type documentViewerOutput struct{ Body DocumentViewer }
+	huma.Register(api, huma.Operation{
+		OperationID: "getDocumentViewer", Method: http.MethodGet,
+		Path:    "/api/v1/nodes/{id}/versions/{version_id}/viewer",
+		Summary: "Read one exact document version for the human viewer",
+		Description: "Binds the stable node, retained immutable version, and a bounded page " +
+			"from its newest active OCR or transcript rendition in one read snapshot.",
+	}, func(ctx context.Context, in *struct {
+		ID        int64  `path:"id" minimum:"1"`
+		VersionID string `path:"version_id"`
+		BuildID   string `query:"build_id" pattern:"^[0-9a-f]{64}$"`
+		Limit     int    `query:"limit" default:"100" minimum:"1" maximum:"100"`
+		Offset    int    `query:"offset" default:"0" minimum:"0"`
+	}) (*documentViewerOutput, error) {
+		view, err := d.Store.DocumentViewer(
+			ctx, in.ID, in.VersionID, in.BuildID, in.Limit, in.Offset,
+		)
+		if err != nil {
+			return nil, FromStoreError(err)
+		}
+		node := fromStoreNode(view.Node)
+		node.Path = view.Path
+		body := DocumentViewer{Node: node, Version: fromStoreContentVersion(view.Version)}
+		if view.Rendition != nil {
+			rendition := view.Rendition
+			body.Rendition = &DocumentViewerRendition{
+				BuildID: rendition.BuildID, SourceSHA256: rendition.SourceSHA256,
+				EvidenceChecksum: rendition.EvidenceChecksum, Completeness: rendition.Completeness,
+				BuildTruncated: rendition.BuildTruncated,
+				Warnings:       append([]string(nil), rendition.Warnings...), PublishedAt: rendition.PublishedAt,
+				Segments: []RenditionTextSegment{}, Total: rendition.Total,
+				Limit: rendition.Limit, Offset: rendition.Offset,
+			}
+			for _, segment := range rendition.Segments {
+				body.Rendition.Segments = append(body.Rendition.Segments, RenditionTextSegment{
+					ID: segment.ID, UnitID: segment.UnitID, Order: segment.Order,
+					CharStart: segment.CharStart, CharEnd: segment.CharEnd,
+					Checksum: segment.Checksum, Text: segment.Text,
+				})
+			}
+		}
+		return &documentViewerOutput{Body: body}, nil
+	})
+
 	huma.Register(api, huma.Operation{
 		OperationID: "getContentVersionBytes", Method: http.MethodGet,
 		Path:    "/api/v1/versions/{version_id}/content",

@@ -245,6 +245,11 @@ func webSessionRequestAllowed(r *http.Request) bool {
 		return false
 	}
 	parts := strings.Split(strings.TrimPrefix(path, prefix), "/")
+	if len(parts) == 4 && parts[1] == "versions" && parts[2] != "" &&
+		parts[3] == "viewer" {
+		nodeID, err := strconv.ParseInt(parts[0], 10, 64)
+		return err == nil && nodeID > 0
+	}
 	if len(parts) < 1 || len(parts) > 2 {
 		return false
 	}

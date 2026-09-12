@@ -33,6 +33,7 @@ Endpoints are filesystem-shaped, under `/api/v1`:
 | `PUT /nodes/{id}/content` | replace raw content under revision, size, and digest preconditions — see [addendum](#addendum-put-nodesidcontent) | Implemented |
 | `POST /nodes/{id}/revert` | create a new head from a prior version of the same file | Implemented |
 | `GET /nodes/{id}/versions` | list immutable content versions newest-first, paginated (`limit`/`offset`) | Implemented |
+| `GET /nodes/{id}/versions/{version_id}/viewer` | bind one live node, its exact retained version, and a bounded active OCR/transcript page for the document-link UI | Implemented |
 | `GET /nodes/{id}/provenance` | inspect immutable ingest-origin facts newest-first, paginated (`limit`/`offset`) | Implemented |
 | `GET /versions/{version_id}` · `GET /versions/{version_id}/content` | inspect or stream one immutable version by stable UUID | Implemented |
 | `GET /content-references?sha256=&limit=&offset=` | find every stable node/version pair retaining a content hash | Implemented |
@@ -76,7 +77,9 @@ modification timestamps, such as nodes restored together.
 
 Root-level, outside `/api/v1` and auth-exempt: `GET /health`, `GET
 /api/ping` (daemon discovery), `GET /docs` and the OpenAPI documents,
-and `/` plus `/assets/` (the static web application, when `[web] enabled`). A hidden `POST
+and `/` plus `/assets/` and canonical
+`/documents/{node-id}/versions/{version-id}` pages (the static web application,
+when `[web] enabled`). A hidden `POST
 /api/daemon/shutdown` (not in the OpenAPI document) backs `docbank
 daemon stop`; it isn't auth-exempt, so it requires both the API key and
 its own shutdown token. The hidden `POST /api/daemon/web-session` exchanges
@@ -92,6 +95,12 @@ hidden `/api/daemon/web-upload` WebSocket instead. The page verifies a
 challenge proof over the upload secret before sending bytes, binds the socket
 to one session, and never reconnects it. An ordinary browser token is
 explicitly forbidden from `POST /api/v1/uploads`.
+
+The document-viewer GET checks node/version ownership and the active rendition
+attachment in one read snapshot. Its page is limited to 100 text segments and
+returns only normalized text plus stable build, source, and evidence hashes;
+it does not expose artifact paths or provider payloads. A `build_id` query pins
+continuation pages to the active build selected by the first response.
 
 `GET /nodes/{id}/children` binds the live directory projection—including its
 current canonical path—and the requested child page to one read transaction.
