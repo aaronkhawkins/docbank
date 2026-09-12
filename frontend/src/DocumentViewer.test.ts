@@ -94,7 +94,7 @@ function preparedOriginal(url = "/api/daemon/web-download/file?ticket=preview") 
   );
 }
 
-it("opens a pinned historical original and its OCR through an in-memory session", async () => {
+it("opens a pinned historical image and its OCR through an in-memory session", async () => {
   history.replaceState(null, "", `/documents/42/versions/${versionID}`);
   const createObjectURL = vi.fn().mockReturnValue("blob:verified-original");
   const revokeObjectURL = vi.fn();
@@ -104,12 +104,17 @@ it("opens a pinned historical original and its OCR through an in-memory session"
     if (path === "/api/daemon/web-session") {
       return json({ token: "bounded", upload_secret: "unused", url: "http://127.0.0.1/private" }, 201);
     }
-    if (path.includes("offset=0")) return json(viewer(0));
-    if (path === "/api/daemon/web-download") return preparedOriginal();
+    if (path.includes("offset=0")) {
+      const original = viewer(0);
+      original.node.name = "registration.png";
+      original.version.mime_type = "image/png";
+      return json(original);
+    }
+    if (path === "/api/daemon/web-download") return new Response((await preparedOriginal().text()).replace("registration.pdf", "registration.png"));
     if (path === "/api/daemon/web-download/file?ticket=preview") {
       return new Response(new Uint8Array(2048), {
         headers: {
-          "Content-Type": "application/pdf",
+          "Content-Type": "image/png",
           "X-Docbank-Content-Version": versionID,
           "X-Docbank-Blob-Hash": sourceHash,
           "X-Docbank-Blob-Size": "2048",
@@ -124,12 +129,12 @@ it("opens a pinned historical original and its OCR through an in-memory session"
 
   render(DocumentViewer);
 
-  expect(await screen.findByRole("heading", { name: "registration.pdf" })).toBeTruthy();
+  expect(await screen.findByRole("heading", { name: "registration.png" })).toBeTruthy();
   expect(screen.getByText("Historical")).toBeTruthy();
   expect(screen.getByRole("tab", { name: "Original" }).getAttribute("aria-selected")).toBe("true");
   expect(screen.getByRole("tab", { name: "OCR" }).getAttribute("aria-selected")).toBe("false");
-  expect((await screen.findByTitle("Original registration.pdf")).getAttribute("src")).toBe(
-    "blob:verified-original#view=Fit&navpanes=0",
+  expect((await screen.findByRole("img", { name: "Original registration.png" })).getAttribute("src")).toBe(
+    "blob:verified-original",
   );
   expect(screen.getByRole("button", { name: /Download original/ })).toBeTruthy();
   const technicalDetails = screen.getByText("Technical details").closest("details");

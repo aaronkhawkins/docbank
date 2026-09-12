@@ -35,7 +35,7 @@ export async function loadOriginalPreview(
   version: ContentVersion,
   signal: AbortSignal,
   onprogress: (progress: DownloadProgress) => void,
-): Promise<string> {
+): Promise<Blob> {
   const kind = originalPreviewKind(version.mime_type, version.size);
   if (!kind) throw new Error("This original is not eligible for inline preview.");
 
@@ -70,7 +70,7 @@ export async function loadOriginalPreview(
       throw new Error("The preview bytes disagreed with the selected document.");
     }
     if (signal.aborted) throw new DOMException("The preview was cancelled.", "AbortError");
-    return URL.createObjectURL(blob);
+    return blob;
   } catch (cause) {
     await response.body?.cancel().catch(() => undefined);
     throw cause;

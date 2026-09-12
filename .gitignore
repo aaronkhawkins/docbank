@@ -6,6 +6,7 @@
 # Frontend dependencies and generated embed output
 node_modules/
 frontend/dist/
+frontend/public/assets/pdfjs/
 internal/web/dist/*
 !internal/web/dist/.keep
 

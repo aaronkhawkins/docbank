@@ -70,8 +70,8 @@ func setWebHeaders(w http.ResponseWriter, webURL string) {
 		}
 	}
 	w.Header().Set("Content-Security-Policy",
-		"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "+
-			"connect-src "+connectSources+"; frame-src 'self' blob:; object-src 'none'; "+
+		"default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "+
+			"connect-src "+connectSources+"; worker-src 'self'; font-src 'self' blob:; frame-src 'none'; object-src 'none'; "+
 			"base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")

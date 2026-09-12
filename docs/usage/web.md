@@ -44,7 +44,9 @@ A document link has the form
 even after the live document is renamed or replaced. The page shows the
 document's current name and path, labels the saved version as current or
 historical, and opens the **Original** tab first. PDFs and supported images can
-be viewed directly on the page. The **OCR** tab shows the saved version's active
+be viewed directly on the page. PDFs use a bundled renderer, including in
+embedded browsers without a native PDF viewer. Use **Previous** and **Next**
+to move through PDF pages. The **OCR** tab shows the saved version's active
 OCR or transcript when one has been published. **Download original** remains
 available, including for formats or sizes that cannot be previewed. Expand
 **Technical details** to inspect version and processing metadata. The provenance
