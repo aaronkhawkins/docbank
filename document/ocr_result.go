@@ -17,9 +17,17 @@ import (
 )
 
 const (
-	suppliedOCRContractV1      = "supplied-ocr/v1"
-	maxSuppliedStructuredBytes = 1 << 20
-	suppliedOCRTimeLayout      = "2006-01-02T15:04:05.000000000Z"
+	suppliedOCRContractV1         = "supplied-ocr/v1"
+	pdfExtractionContractV1       = "personal-os-pdf-extraction/v1"
+	pdfExtractionEngine           = "personal-os-pdf"
+	pdfExtractionEngineVersion    = "1"
+	pdfExtractionRecipe           = "poppler-native-or-focr-page-v1"
+	pdfExtractionFOCRModel        = "unlimited-ocr.v0.7.0.int8.focrq"
+	pdfExtractionFOCRManifest     = "573340710167697891bf52dfa4cbb5d0a02a68f3011c01f8ef83fd34622fb592"
+	pdfExtractionFOCRManifestSize = 4_157_448_783
+	maxPDFExtractionPages         = 50
+	maxSuppliedStructuredBytes    = 1 << 20
+	suppliedOCRTimeLayout         = "2006-01-02T15:04:05.000000000Z"
 )
 
 // SuppliedOCRResult is an already-produced OCR result whose engine and source
@@ -64,7 +72,20 @@ type focrLayoutEntryV1 struct {
 	Boxes [][]float64 `json:"boxes"`
 }
 
-// BuildSuppliedOCREvidenceV1 converts a caller-supplied image or PDF OCR
+type pdfExtractionOutputV1 struct {
+	ContractVersion string                `json:"contract_version"`
+	Markdown        string                `json:"markdown"`
+	Pages           []pdfExtractionPageV1 `json:"pages"`
+}
+
+type pdfExtractionPageV1 struct {
+	PageNumber int             `json:"page_number"`
+	Source     string          `json:"source"`
+	Markdown   string          `json:"markdown"`
+	FOCRJSON   json.RawMessage `json:"focr_json"`
+}
+
+// BuildSuppliedOCREvidenceV1 converts caller-supplied image OCR or PDF extraction
 // result into Docbank's existing normalized evidence and retained artifact
 // contracts. The transcript manifest binds the exact source and execution
 // provenance; Structured remains opaque provider output and is retained
@@ -79,10 +100,6 @@ func BuildSuppliedOCREvidenceV1(
 	if result.Family != "image" && result.Family != "pdf" {
 		return NormalizedEvidenceV1{}, nil, errors.New("supplied OCR family must be image or pdf")
 	}
-	if result.Engine != "focr" || result.EngineVersion != "0.8.0" {
-		return NormalizedEvidenceV1{}, nil, errors.New(
-			"supplied OCR engine must be focr 0.8.0")
-	}
 	for subject, value := range map[string]string{
 		"engine": result.Engine, "engine version": result.EngineVersion,
 		"model": result.Model, "recipe": result.Recipe,
@@ -90,13 +107,6 @@ func BuildSuppliedOCREvidenceV1(
 		if err := validateEvidenceIdentifier(value, "supplied OCR "+subject); err != nil {
 			return NormalizedEvidenceV1{}, nil, err
 		}
-	}
-	if err := validateSHA256(result.ManifestSHA256, "supplied OCR manifest"); err != nil {
-		return NormalizedEvidenceV1{}, nil, err
-	}
-	if result.ManifestBytes <= 0 {
-		return NormalizedEvidenceV1{}, nil, errors.New(
-			"supplied OCR manifest byte count must be positive")
 	}
 	if err := validateSHA256(result.SourceSHA256, "supplied OCR source"); err != nil {
 		return NormalizedEvidenceV1{}, nil, err
@@ -117,8 +127,32 @@ func BuildSuppliedOCREvidenceV1(
 		return NormalizedEvidenceV1{}, nil, errors.New(
 			"supplied OCR structured result must be valid JSON of at most 1 MiB")
 	}
-	if err := validateFOCROutputV1(result.Structured, result.Text); err != nil {
-		return NormalizedEvidenceV1{}, nil, err
+
+	var pdfOutput *pdfExtractionOutputV1
+	switch {
+	case result.Engine == "focr" && result.EngineVersion == "0.8.0":
+		if err := validateSHA256(result.ManifestSHA256, "supplied OCR manifest"); err != nil {
+			return NormalizedEvidenceV1{}, nil, err
+		}
+		if result.ManifestBytes <= 0 {
+			return NormalizedEvidenceV1{}, nil, errors.New(
+				"supplied OCR manifest byte count must be positive")
+		}
+		if err := validateFOCROutputV1(result.Structured, result.Text); err != nil {
+			return NormalizedEvidenceV1{}, nil, err
+		}
+	case result.Engine == pdfExtractionEngine && result.EngineVersion == pdfExtractionEngineVersion:
+		output, hasFOCR, err := validatePDFExtractionOutputV1(result.Structured, result.Text)
+		if err != nil {
+			return NormalizedEvidenceV1{}, nil, err
+		}
+		if err := validatePDFExtractionMetadata(result, hasFOCR); err != nil {
+			return NormalizedEvidenceV1{}, nil, err
+		}
+		pdfOutput = &output
+	default:
+		return NormalizedEvidenceV1{}, nil, errors.New(
+			"supplied OCR engine must be focr 0.8.0 or personal-os-pdf 1")
 	}
 
 	manifest, err := canonical.Marshal(suppliedOCRArtifactV1{
@@ -159,6 +193,22 @@ func BuildSuppliedOCREvidenceV1(
 			{Pointer: "structured.json", ProviderID: "structured", Role: EvidenceArtifactStructured, SHA256: structuredSHA256},
 		},
 	}
+	if pdfOutput != nil {
+		source.Completeness = EvidenceComplete
+		source.Omissions = nil
+		source.UnitKind = EvidenceUnitPage
+		source.Units = make([]SourceEvidenceUnitV1, len(pdfOutput.Pages))
+		for index, page := range pdfOutput.Pages {
+			pageNumber := int64(page.PageNumber)
+			source.Units[index] = SourceEvidenceUnitV1{
+				Order: index, Text: page.Markdown,
+				Locator: SourceEvidenceLocatorV1{
+					Kind: EvidenceLocatorPage, IndexOrigin: EvidenceIndexOriginOne,
+					Start: pageNumber, End: pageNumber,
+				},
+			}
+		}
+	}
 	if err := policy.validateSource(source); err != nil {
 		return NormalizedEvidenceV1{}, nil, err
 	}
@@ -167,6 +217,89 @@ func BuildSuppliedOCREvidenceV1(
 		return NormalizedEvidenceV1{}, nil, err
 	}
 	return evidence, artifacts, nil
+}
+
+func validatePDFExtractionOutputV1(encoded []byte, transcript string) (pdfExtractionOutputV1, bool, error) {
+	if err := manifestjson.RejectDuplicateKeys(encoded, "PDF extraction structured result"); err != nil {
+		return pdfExtractionOutputV1{}, false, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.DisallowUnknownFields()
+	var output pdfExtractionOutputV1
+	if err := decoder.Decode(&output); err != nil {
+		return pdfExtractionOutputV1{}, false, fmt.Errorf(
+			"supplied OCR structured result is not PDF extraction v1: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return pdfExtractionOutputV1{}, false, errors.New(
+			"supplied OCR PDF extraction result contains trailing JSON")
+	}
+	if output.ContractVersion != pdfExtractionContractV1 {
+		return pdfExtractionOutputV1{}, false, errors.New(
+			"supplied OCR PDF extraction contract version must be personal-os-pdf-extraction/v1")
+	}
+	if len(output.Pages) == 0 || len(output.Pages) > maxPDFExtractionPages {
+		return pdfExtractionOutputV1{}, false, errors.New(
+			"supplied OCR PDF extraction result must contain 1-50 pages")
+	}
+	pageMarkdown := make([]string, len(output.Pages))
+	hasFOCR := false
+	for index, page := range output.Pages {
+		if page.PageNumber != index+1 {
+			return pdfExtractionOutputV1{}, false, fmt.Errorf(
+				"supplied OCR PDF extraction page %d is not sequential", index)
+		}
+		if err := validateEvidenceText(page.Markdown, "supplied OCR PDF extraction page text"); err != nil ||
+			strings.TrimSpace(page.Markdown) == "" {
+			return pdfExtractionOutputV1{}, false, fmt.Errorf(
+				"supplied OCR PDF extraction page %d has invalid text", index)
+		}
+		switch page.Source {
+		case "native_text":
+			if len(page.FOCRJSON) != 0 {
+				return pdfExtractionOutputV1{}, false, fmt.Errorf(
+					"supplied OCR PDF extraction native page %d must omit focr_json", index)
+			}
+		case "focr":
+			var raw string
+			if len(page.FOCRJSON) == 0 || json.Unmarshal(page.FOCRJSON, &raw) != nil || raw == "" {
+				return pdfExtractionOutputV1{}, false, fmt.Errorf(
+					"supplied OCR PDF extraction focr page %d must contain focr_json", index)
+			}
+			if err := validateFOCROutputV1([]byte(raw), page.Markdown); err != nil {
+				return pdfExtractionOutputV1{}, false, fmt.Errorf(
+					"supplied OCR PDF extraction focr page %d is invalid: %w", index, err)
+			}
+			hasFOCR = true
+		default:
+			return pdfExtractionOutputV1{}, false, fmt.Errorf(
+				"supplied OCR PDF extraction page %d has an invalid source", index)
+		}
+		pageMarkdown[index] = page.Markdown
+	}
+	if output.Markdown != strings.Join(pageMarkdown, "\n\n") || output.Markdown != transcript {
+		return pdfExtractionOutputV1{}, false, errors.New(
+			"supplied OCR PDF extraction transcript does not match its pages")
+	}
+	return output, hasFOCR, nil
+}
+
+func validatePDFExtractionMetadata(result SuppliedOCRResult, hasFOCR bool) error {
+	if result.Family != "pdf" || result.Recipe != pdfExtractionRecipe {
+		return errors.New("supplied OCR PDF extraction metadata is invalid")
+	}
+	if !hasFOCR {
+		if result.Model != "none" || result.ManifestSHA256 != "" || result.ManifestBytes != 0 {
+			return errors.New("native PDF extraction must not claim focr model provenance")
+		}
+		return nil
+	}
+	if result.Model != pdfExtractionFOCRModel || result.ManifestSHA256 != pdfExtractionFOCRManifest ||
+		result.ManifestBytes != pdfExtractionFOCRManifestSize {
+		return errors.New("OCR PDF extraction must bind the pinned focr model provenance")
+	}
+	return nil
 }
 
 func validateFOCROutputV1(encoded []byte, transcript string) error {

@@ -44,7 +44,7 @@ func registerSuppliedOCROpenAPI(api huma.API) {
 	api.OpenAPI().AddOperation(&huma.Operation{
 		OperationID: "publishSuppliedOCR", Method: http.MethodPost,
 		Path:    "/api/v1/nodes/{id}/supplied-ocr",
-		Summary: "Publish caller-supplied focr evidence without executing OCR",
+		Summary: "Publish caller-supplied extraction evidence without executing OCR",
 		Description: "Streams exactly three ordered multipart file fields: metadata, transcript, and structured. " +
 			"Metadata binds a stable submission key to one node-owned content version, its source SHA-256, " +
 			"and declared artifact hashes and sizes.",
@@ -241,16 +241,27 @@ func validateSuppliedOCRMetadata(metadata SuppliedOCRPublicationMetadata) *Error
 	}
 	for subject, value := range map[string]string{
 		"source_sha256": metadata.SourceSHA256, "submission_key": metadata.SubmissionKey,
-		"manifest_sha256": metadata.ManifestSHA256, "transcript_sha256": metadata.TranscriptSHA256,
-		"structured_sha256": metadata.StructuredSHA256,
+		"transcript_sha256": metadata.TranscriptSHA256, "structured_sha256": metadata.StructuredSHA256,
 	} {
 		if !validHash(value) {
 			return NewError(http.StatusUnprocessableEntity, "validation", subject+" must be canonical lowercase SHA-256")
 		}
 	}
-	if strings.TrimSpace(metadata.ContentVersionID) == "" || metadata.ManifestBytes <= 0 {
+	if strings.TrimSpace(metadata.ContentVersionID) == "" {
 		return NewError(http.StatusUnprocessableEntity, "validation",
-			"content_version_id and positive manifest_bytes are required")
+			"content_version_id is required")
+	}
+	nativePDF := metadata.Family == "pdf" && metadata.Engine == "personal-os-pdf" &&
+		metadata.EngineVersion == "1" && metadata.Model == "none" &&
+		metadata.Recipe == "poppler-native-or-focr-page-v1"
+	if nativePDF {
+		if metadata.ManifestSHA256 != "" || metadata.ManifestBytes != 0 {
+			return NewError(http.StatusUnprocessableEntity, "validation",
+				"native PDF extraction must omit model manifest provenance")
+		}
+	} else if !validHash(metadata.ManifestSHA256) || metadata.ManifestBytes <= 0 {
+		return NewError(http.StatusUnprocessableEntity, "validation",
+			"manifest_sha256 and positive manifest_bytes are required")
 	}
 	if metadata.TranscriptBytes <= 0 || metadata.TranscriptBytes > MaxSuppliedOCRTranscriptBytes ||
 		metadata.StructuredBytes <= 0 || metadata.StructuredBytes > MaxSuppliedOCRStructuredBytes {

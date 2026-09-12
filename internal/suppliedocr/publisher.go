@@ -1,4 +1,4 @@
-// Package suppliedocr publishes caller-produced focr output through Docbank's
+// Package suppliedocr publishes caller-produced extraction output through Docbank's
 // existing verified rendition artifact and lexical-head machinery.
 package suppliedocr
 

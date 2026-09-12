@@ -7,6 +7,7 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -31,6 +32,7 @@ type suppliedOCRTestInput struct {
 	structuredHash string
 	transcriptLen  int64
 	structuredLen  int64
+	metadata       map[string]any
 }
 
 func suppliedOCRFixtureInput(nodeID int64, versionID, sourceSHA256 string) suppliedOCRTestInput {
@@ -53,7 +55,7 @@ func suppliedOCRMetadata(in suppliedOCRTestInput) map[string]any {
 	if structuredHash == "" {
 		structuredHash = digestTestBytes(in.structured)
 	}
-	return map[string]any{
+	metadata := map[string]any{
 		"content_version_id": in.versionID,
 		"source_sha256":      in.sourceSHA256,
 		"submission_key":     in.submissionKey,
@@ -65,6 +67,39 @@ func suppliedOCRMetadata(in suppliedOCRTestInput) map[string]any {
 		"transcript_sha256": transcriptHash, "transcript_bytes": in.transcriptLen,
 		"structured_sha256": structuredHash, "structured_bytes": in.structuredLen,
 	}
+	maps.Copy(metadata, in.metadata)
+	return metadata
+}
+
+func suppliedPDFExtractionFixtureInput(nodeID int64, versionID, sourceSHA256 string, mixed bool) suppliedOCRTestInput {
+	in := suppliedOCRFixtureInput(nodeID, versionID, sourceSHA256)
+	in.transcript = []byte("Native page one\n\nNative page two")
+	in.structured = []byte(`{"contract_version":"personal-os-pdf-extraction/v1","markdown":"Native page one\n\nNative page two","pages":[{"page_number":1,"source":"native_text","markdown":"Native page one"},{"page_number":2,"source":"native_text","markdown":"Native page two"}]}`)
+	in.metadata = map[string]any{
+		"engine": "personal-os-pdf", "engine_version": "1", "model": "none",
+		"recipe": "poppler-native-or-focr-page-v1", "manifest_sha256": nil, "manifest_bytes": int64(0),
+	}
+	if mixed {
+		focr := "{\n  \"schema_version\": 1, \"markdown\": \"Scanned page two\", \"layout\": []\n}\n"
+		in.transcript = []byte("Native page one\n\nScanned page two")
+		encoded, err := json.Marshal(map[string]any{
+			"contract_version": "personal-os-pdf-extraction/v1", "markdown": string(in.transcript),
+			"pages": []any{
+				map[string]any{"page_number": 1, "source": "native_text", "markdown": "Native page one"},
+				map[string]any{"page_number": 2, "source": "focr", "markdown": "Scanned page two", "focr_json": focr},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
+		in.structured = encoded
+		in.metadata["model"] = "unlimited-ocr.v0.7.0.int8.focrq"
+		in.metadata["manifest_sha256"] = "573340710167697891bf52dfa4cbb5d0a02a68f3011c01f8ef83fd34622fb592"
+		in.metadata["manifest_bytes"] = int64(4_157_448_783)
+	}
+	in.transcriptLen = int64(len(in.transcript))
+	in.structuredLen = int64(len(in.structured))
+	return in
 }
 
 func digestTestBytes(value []byte) string {
@@ -300,4 +335,67 @@ func TestSuppliedOCRPublicationRejectsArtifactDigestMismatch(t *testing.T) {
 	resp, body := sendSuppliedOCR(t, ts.URL, ts.Client(), in, nil)
 	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, body)
 	assert.Contains(t, body, `"code":"digest_mismatch"`)
+}
+
+func TestSuppliedOCRPublishesNativeAndMixedPDFPageEvidence(t *testing.T) {
+	for _, mixed := range []bool{false, true} {
+		name := "native"
+		if mixed {
+			name = "mixed"
+		}
+		t.Run(name, func(t *testing.T) {
+			ts, s := newTestServer(t, nil)
+			node := createFileWithContent(t, ts, s, "/source.pdf", "immutable source bytes")
+			in := suppliedPDFExtractionFixtureInput(node.ID, node.CurrentVersionID, node.BlobHash, mixed)
+			resp, body := sendSuppliedOCR(t, ts.URL, ts.Client(), in, nil)
+			require.Equal(t, http.StatusCreated, resp.StatusCode, body)
+			var receipt api.SuppliedOCRPublicationReceipt
+			require.NoError(t, json.Unmarshal([]byte(body), &receipt))
+			build, err := s.RenditionBuildByID(t.Context(), receipt.BuildID)
+			require.NoError(t, err)
+			require.Len(t, build.Units, 2)
+			for index, unit := range build.Units {
+				assert.Equal(t, document.EvidenceLocatorPage, unit.Locator.Kind)
+				assert.Equal(t, int64(index+1), unit.Locator.Start)
+				assert.Equal(t, int64(index+1), unit.Locator.End)
+			}
+			var structuredHash string
+			for _, artifact := range build.Artifacts {
+				if artifact.Role == string(document.EvidenceArtifactStructured) {
+					structuredHash = artifact.BlobHash
+				}
+			}
+			require.NotEmpty(t, structuredHash)
+			reader, err := s.Blobs.OpenContext(t.Context(), structuredHash)
+			require.NoError(t, err)
+			retained, err := io.ReadAll(reader)
+			require.NoError(t, err)
+			require.NoError(t, reader.Close())
+			assert.Equal(t, in.structured, retained)
+		})
+	}
+}
+
+func TestSuppliedOCRPDFExtractionReplayIsExact(t *testing.T) {
+	ts, s := newTestServer(t, nil)
+	node := createFileWithContent(t, ts, s, "/source.pdf", "immutable source bytes")
+	in := suppliedPDFExtractionFixtureInput(node.ID, node.CurrentVersionID, node.BlobHash, true)
+
+	resp, body := sendSuppliedOCR(t, ts.URL, ts.Client(), in, nil)
+	require.Equal(t, http.StatusCreated, resp.StatusCode, body)
+	resp, body = sendSuppliedOCR(t, ts.URL, ts.Client(), in, nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	assert.Contains(t, body, `"status":"skipped"`)
+}
+
+func TestSuppliedOCRPDFExtractionRejectsMalformedWrapper(t *testing.T) {
+	ts, s := newTestServer(t, nil)
+	node := createFileWithContent(t, ts, s, "/source.pdf", "immutable source bytes")
+	in := suppliedPDFExtractionFixtureInput(node.ID, node.CurrentVersionID, node.BlobHash, false)
+	in.structured = bytes.Replace(in.structured, []byte(`"page_number":2`), []byte(`"page_number":3`), 1)
+	in.structuredLen = int64(len(in.structured))
+
+	resp, body := sendSuppliedOCR(t, ts.URL, ts.Client(), in, nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, body)
+	assert.Contains(t, body, `"code":"validation"`)
 }

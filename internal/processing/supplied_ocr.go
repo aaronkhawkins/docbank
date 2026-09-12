@@ -19,7 +19,7 @@ const (
 	suppliedOCRMaxSegmentRunes  = 4 << 10
 )
 
-// SuppliedOCRPublicationInput binds caller-produced focr evidence to one
+// SuppliedOCRPublicationInput binds caller-produced extraction evidence to one
 // immutable Docbank content version. SubmissionKey is the caller's stable
 // retry identity; MaterialChecksum is computed independently from its value.
 type SuppliedOCRPublicationInput struct {
@@ -62,7 +62,7 @@ type suppliedOCRProviderReceiptV1 struct {
 	SubmissionKey    string `json:"submission_key"`
 }
 
-// BuildSuppliedOCRPublicationCandidate validates supplied focr output and
+// BuildSuppliedOCRPublicationCandidate validates supplied extraction output and
 // converts it into the existing verified artifact-publisher contract. It does
 // not invoke an OCR provider or mutate catalog/blob authority.
 func BuildSuppliedOCRPublicationCandidate(
@@ -113,7 +113,8 @@ func BuildSuppliedOCRPublicationCandidate(
 	if input.LegacyRequestIdentity {
 		requestIdentity = ""
 	}
-	profile, err := suppliedOCRProcessingProfile(materialChecksum, input.Result.ManifestSHA256, requestIdentity)
+	profile, err := suppliedOCRProcessingProfile(
+		materialChecksum, input.Result.Engine, input.Result.ManifestSHA256, requestIdentity)
 	if err != nil {
 		return SuppliedOCRPublicationCandidate{}, err
 	}
@@ -199,7 +200,9 @@ func BuildSuppliedOCRPublicationCandidate(
 	}}, nil
 }
 
-func suppliedOCRProcessingProfile(materialChecksum, manifestSHA256, submissionKey string) (store.ProcessingProfileRecord, error) {
+func suppliedOCRProcessingProfile(
+	materialChecksum, engine, manifestSHA256, submissionKey string,
+) (store.ProcessingProfileRecord, error) {
 	fingerprint := func(subject string) string {
 		return suppliedOCRSHA256([]byte("docbank:supplied-ocr-profile:v1\x00" + subject))
 	}
@@ -208,15 +211,26 @@ func suppliedOCRProcessingProfile(materialChecksum, manifestSHA256, submissionKe
 		// A supplied result is a distinct request even when its source bytes match.
 		uploadIdentity = "submission:" + submissionKey
 	}
+	descriptorID := "focr"
+	descriptorFingerprint := fingerprint("focr-0.8.0")
+	maxUnits := 1
+	if engine == "personal-os-pdf" {
+		descriptorID = "personal-os-pdf"
+		descriptorFingerprint = fingerprint("personal-os-pdf-1")
+		maxUnits = 50
+		if manifestSHA256 == "" {
+			manifestSHA256 = fingerprint("personal-os-pdf-native-1")
+		}
+	}
 	profile := document.ProcessingProfileV1{
 		ContractVersion: document.ProcessingProfileContractV1,
 		Rendition: &document.RenditionBindingV1{ //nolint:gosec // Stable non-secret profile identity.
 			AdapterContract: "supplied-ocr/v1", AuthorizationFingerprint: materialChecksum,
 			CredentialBinding:     "credential:supplied-ocr",
 			DeploymentFingerprint: manifestSHA256,
-			Descriptor:            document.ProviderDescriptorV1{ID: "focr", Fingerprint: fingerprint("focr-0.8.0")},
+			Descriptor:            document.ProviderDescriptorV1{ID: descriptorID, Fingerprint: descriptorFingerprint},
 			DisclosureFingerprint: fingerprint("disclosure"), MaxDocumentBytes: 1 << 40,
-			MaxResponseBytes: 64 << 20, MaxUnits: 1, Name: "supplied-ocr",
+			MaxResponseBytes: 64 << 20, MaxUnits: maxUnits, Name: "supplied-ocr",
 			RequestedArtifacts: []document.EvidenceArtifactRole{
 				document.EvidenceArtifactStructured, document.EvidenceArtifactTranscript,
 			},
