@@ -19,6 +19,14 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 function viewer(offset: number) {
   return {
     node: {
@@ -111,4 +119,60 @@ it("rejects malformed document links before session bootstrap", async () => {
   render(DocumentViewer);
   expect(await screen.findByText("This document link is malformed.")).toBeTruthy();
   expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it("stays locked when an in-flight document request completes", async () => {
+  history.replaceState(null, "", `/documents/42/versions/${versionID}`);
+  const pendingViewer = deferred<Response>();
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, request) => {
+    const path = String(input);
+    if (path === "/api/daemon/web-session" && request?.method === "POST") {
+      return json({ token: "bounded", upload_secret: "unused" }, 201);
+    }
+    if (path.includes("/viewer?")) return pendingViewer.promise;
+    if (path === "/api/daemon/web-session" && request?.method === "DELETE") {
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected request ${path}`);
+  });
+
+  render(DocumentViewer);
+  const lock = await screen.findByRole("button", { name: "Lock document session" });
+  await fireEvent.click(lock);
+  expect(await screen.findByText("This document session is locked.")).toBeTruthy();
+  expect(screen.queryByText("Opening document…")).toBeNull();
+
+  pendingViewer.resolve(json(viewer(0)));
+  await Promise.resolve();
+  expect(screen.queryByRole("heading", { name: "registration.pdf" })).toBeNull();
+});
+
+it("revokes a bootstrapped session that arrives after cleanup", async () => {
+  history.replaceState(null, "", `/documents/42/versions/${versionID}`);
+  const pendingBootstrap = deferred<Response>();
+  const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, request) => {
+    const path = String(input);
+    if (path === "/api/daemon/web-session" && request?.method === "POST") {
+      return pendingBootstrap.promise;
+    }
+    if (path === "/api/daemon/web-session" && request?.method === "DELETE") {
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected request ${path}`);
+  });
+
+  const rendered = render(DocumentViewer);
+  rendered.unmount();
+  pendingBootstrap.resolve(json({ token: "late-token", upload_secret: "unused" }, 201));
+
+  await waitFor(() => {
+    const revoke = fetchMock.mock.calls.find(
+      ([path, request]) =>
+        String(path) === "/api/daemon/web-session" && request?.method === "DELETE",
+    );
+    expect(revoke).toBeTruthy();
+    expect(new Headers(revoke?.[1]?.headers).get("X-Docbank-Web-Session")).toBe(
+      "late-token",
+    );
+  });
 });

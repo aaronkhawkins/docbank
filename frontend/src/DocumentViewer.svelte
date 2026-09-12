@@ -57,11 +57,15 @@
   async function open(fragmentToken: string): Promise<void> {
     const request = ++generation;
     let token = fragmentToken;
+    const bootstrapped = token === "";
     loading = true;
     error = "";
     try {
       token ||= (await bootstrapBrowserSession()).token;
-      if (request !== generation) return;
+      if (request !== generation) {
+        if (bootstrapped) void revokeSession(token).catch(() => undefined);
+        return;
+      }
       session = token;
       const next = await documentViewer(token, target!);
       if (request !== generation) return;
@@ -131,6 +135,8 @@
     const token = session;
     session = "";
     record = null;
+    loading = false;
+    loadingMore = false;
     provenanceOpen = false;
     error = "This document session is locked.";
     try {
