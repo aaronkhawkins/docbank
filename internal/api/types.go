@@ -465,18 +465,18 @@ type UploadReceipt struct {
 }
 
 // SuppliedOCRPublicationMetadata declares the immutable source binding and
-// exact caller-produced focr artifacts carried by the multipart request.
+// exact caller-produced extraction artifacts carried by the multipart request.
 type SuppliedOCRPublicationMetadata struct {
 	ContentVersionID string `json:"content_version_id" format:"uuid"`
 	SourceSHA256     string `json:"source_sha256" pattern:"^[0-9a-f]{64}$"`
 	SubmissionKey    string `json:"submission_key" pattern:"^[0-9a-f]{64}$"`
 	Family           string `json:"family" enum:"image,pdf"`
-	Engine           string `json:"engine" enum:"focr"`
-	EngineVersion    string `json:"engine_version" enum:"0.8.0"`
+	Engine           string `json:"engine" enum:"focr,personal-os-pdf"`
+	EngineVersion    string `json:"engine_version" enum:"0.8.0,1"`
 	Model            string `json:"model"`
 	Recipe           string `json:"recipe"`
-	ManifestSHA256   string `json:"manifest_sha256" pattern:"^[0-9a-f]{64}$"`
-	ManifestBytes    int64  `json:"manifest_bytes" minimum:"1"`
+	ManifestSHA256   string `json:"manifest_sha256" pattern:"^$|^[0-9a-f]{64}$"`
+	ManifestBytes    int64  `json:"manifest_bytes" minimum:"0"`
 	ProducedAt       string `json:"produced_at" format:"date-time"`
 	TranscriptSHA256 string `json:"transcript_sha256" pattern:"^[0-9a-f]{64}$"`
 	TranscriptBytes  int64  `json:"transcript_bytes" minimum:"1"`
