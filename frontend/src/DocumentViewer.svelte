@@ -17,6 +17,7 @@
     TopBar,
   } from "@kenn-io/kit-ui";
   import DownloadButton from "./DownloadButton.svelte";
+  import OriginalPreview from "./OriginalPreview.svelte";
   import ProvenanceDrawer from "./ProvenanceDrawer.svelte";
   import {
     APIError,
@@ -36,6 +37,7 @@
   let loadingMore = $state(false);
   let error = $state(target ? "" : "This document link is malformed.");
   let provenanceOpen = $state(false);
+  let activeTab = $state<"original" | "ocr">("original");
   let generation = 0;
 
   const isCurrent = $derived(
@@ -145,6 +147,16 @@
       // The in-memory credential is cleared even if the daemon is unreachable.
     }
   }
+
+  function handleTabKey(event: KeyboardEvent): void {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    if (event.key === "Home") activeTab = "original";
+    else if (event.key === "End") activeTab = "ocr";
+    else activeTab = activeTab === "original" ? "ocr" : "original";
+    const id = activeTab === "original" ? "document-tab-original" : "document-tab-ocr";
+    document.getElementById(id)?.focus();
+  }
 </script>
 
 <div class="viewer-shell">
@@ -200,50 +212,105 @@
 
       {#if error}<p class="error" role="alert">{error}</p>{/if}
 
-      <div class="metadata-grid">
-        <Card level="raised" title="Document details" eyebrow="SAVED VERSION">
-          <dl>
-            <div><dt>Status</dt><dd><Chip size="xs" tone={isCurrent ? "success" : "muted"}>{isCurrent ? "Current" : "Historical"}</Chip></dd></div>
-            <div class="identity"><dt>Version</dt><dd><code>{record.version.id}</code><CopyButton text={record.version.id} ariaLabel="Copy version ID" /></dd></div>
-            <div><dt>Node</dt><dd>id:{record.node.id} · revision {record.version.node_revision}</dd></div>
-            <div><dt>Recorded</dt><dd>{formatDate(record.version.recorded_at)}</dd></div>
-            <div><dt>Original</dt><dd>{record.version.mime_type || "Unknown type"} · {formatBytes(record.version.size)}</dd></div>
-            <div class="identity"><dt>SHA-256</dt><dd><code>{record.version.blob_hash}</code><CopyButton text={record.version.blob_hash} ariaLabel="Copy source hash" /></dd></div>
-          </dl>
-        </Card>
+      <div class="content-tabs">
+        <div class="tab-list" role="tablist" aria-label="Document content">
+          <button
+            id="document-tab-original"
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "original"}
+            aria-controls="document-panel-original"
+            tabindex={activeTab === "original" ? 0 : -1}
+            onclick={() => (activeTab = "original")}
+            onkeydown={handleTabKey}
+          >Original</button>
+          <button
+            id="document-tab-ocr"
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "ocr"}
+            aria-controls="document-panel-ocr"
+            tabindex={activeTab === "ocr" ? 0 : -1}
+            onclick={() => (activeTab = "ocr")}
+            onkeydown={handleTabKey}
+          >OCR</button>
+        </div>
 
-        <Card level="raised" title="Processing details" eyebrow="EXTRACTED TEXT">
-          {#if record.rendition}
-            <dl>
-              <div><dt>Evidence</dt><dd><Chip size="xs" tone={record.rendition.completeness === "complete" ? "success" : "warning"}>{record.rendition.completeness}</Chip></dd></div>
-              <div><dt>Published</dt><dd>{formatDate(record.rendition.published_at)}</dd></div>
-              <div class="identity"><dt>Build</dt><dd><code>{record.rendition.build_id}</code><CopyButton text={record.rendition.build_id} ariaLabel="Copy OCR build ID" /></dd></div>
-              <div class="identity"><dt>Evidence checksum</dt><dd><code>{record.rendition.evidence_checksum}</code><CopyButton text={record.rendition.evidence_checksum} ariaLabel="Copy evidence checksum" /></dd></div>
-            </dl>
-          {:else}
-            <p class="muted">No active OCR or transcript rendition is recorded for this exact version.</p>
-          {/if}
-        </Card>
-      </div>
-
-      <div class="transcript-card">
-        <Card level="raised" padding="none" ariaLabel="OCR transcript">
-          <header>
-            <div><span class="eyebrow">EXTRACTED TEXT</span><h2>OCR transcript</h2></div>
-            {#if record.rendition}<span>{record.rendition.segments.length} of {record.rendition.total} segments</span>{/if}
-          </header>
-          {#if transcript}
-            <pre>{transcript}</pre>
-            {#if record.rendition && record.rendition.segments.length < record.rendition.total}
-              <footer><Button size="sm" surface="soft" disabled={loadingMore} onclick={() => void loadMore()}>{#if loadingMore}<Spinner size={13} />{/if}Load more</Button></footer>
+        <div
+          id="document-panel-original"
+          class="content-panel"
+          role="tabpanel"
+          aria-labelledby="document-tab-original"
+          hidden={activeTab !== "original"}
+        >
+          <Card level="raised" padding="none" ariaLabel="Original document preview">
+            <OriginalPreview
+              {session}
+              node={record.node}
+              version={record.version}
+              onauthfailure={(cause) => {
+                generation += 1;
+                session = "";
+                record = null;
+                error = accessError(cause);
+              }}
+            />
+          </Card>
+        </div>
+        <div
+          id="document-panel-ocr"
+          class="content-panel"
+          role="tabpanel"
+          aria-labelledby="document-tab-ocr"
+          hidden={activeTab !== "ocr"}
+        >
+          <Card level="raised" padding="none" ariaLabel="OCR transcript">
+            <header>
+              <div><span class="eyebrow">EXTRACTED TEXT</span><h2>OCR transcript</h2></div>
+              {#if record.rendition}<span>{record.rendition.segments.length} of {record.rendition.total} segments</span>{/if}
+            </header>
+            {#if transcript}
+              <pre>{transcript}</pre>
+              {#if record.rendition && record.rendition.segments.length < record.rendition.total}
+                <footer><Button size="sm" surface="soft" disabled={loadingMore} onclick={() => void loadMore()}>{#if loadingMore}<Spinner size={13} />{/if}Load more</Button></footer>
+              {/if}
+            {:else}
+              <EmptyState title="No transcript available" description="The original remains available for verified download.">
+                {#snippet icon()}<HistoryIcon size="22" />{/snippet}
+              </EmptyState>
             {/if}
-          {:else}
-            <EmptyState title="No transcript available" description="The original remains available for verified download.">
-              {#snippet icon()}<HistoryIcon size="22" />{/snippet}
-            </EmptyState>
-          {/if}
-        </Card>
+          </Card>
+        </div>
       </div>
+
+      <details class="technical-details">
+        <summary>Technical details</summary>
+        <div class="metadata-grid">
+          <Card level="raised" title="Document details" eyebrow="SAVED VERSION">
+            <dl>
+              <div><dt>Status</dt><dd><Chip size="xs" tone={isCurrent ? "success" : "muted"}>{isCurrent ? "Current" : "Historical"}</Chip></dd></div>
+              <div class="identity"><dt>Version</dt><dd><code>{record.version.id}</code><CopyButton text={record.version.id} ariaLabel="Copy version ID" /></dd></div>
+              <div><dt>Node</dt><dd>id:{record.node.id} · revision {record.version.node_revision}</dd></div>
+              <div><dt>Recorded</dt><dd>{formatDate(record.version.recorded_at)}</dd></div>
+              <div><dt>Original</dt><dd>{record.version.mime_type || "Unknown type"} · {formatBytes(record.version.size)}</dd></div>
+              <div class="identity"><dt>SHA-256</dt><dd><code>{record.version.blob_hash}</code><CopyButton text={record.version.blob_hash} ariaLabel="Copy source hash" /></dd></div>
+            </dl>
+          </Card>
+
+          <Card level="raised" title="Processing details" eyebrow="EXTRACTED TEXT">
+            {#if record.rendition}
+              <dl>
+                <div><dt>Evidence</dt><dd><Chip size="xs" tone={record.rendition.completeness === "complete" ? "success" : "warning"}>{record.rendition.completeness}</Chip></dd></div>
+                <div><dt>Published</dt><dd>{formatDate(record.rendition.published_at)}</dd></div>
+                <div class="identity"><dt>Build</dt><dd><code>{record.rendition.build_id}</code><CopyButton text={record.rendition.build_id} ariaLabel="Copy OCR build ID" /></dd></div>
+                <div class="identity"><dt>Evidence checksum</dt><dd><code>{record.rendition.evidence_checksum}</code><CopyButton text={record.rendition.evidence_checksum} ariaLabel="Copy evidence checksum" /></dd></div>
+              </dl>
+            {:else}
+              <p class="muted">No active OCR or transcript rendition is recorded for this exact version.</p>
+            {/if}
+          </Card>
+        </div>
+      </details>
 
       <p class="integrity-note"><ShieldCheckIcon size="14" aria-hidden="true" /> This link always opens this saved version and its extracted text.</p>
     {/if}
@@ -272,19 +339,28 @@
   .brand > div span { color: var(--text-muted); font-size: var(--font-size-xs); }
   .brand-mark { display: grid; width: 30px; height: 30px; place-items: center; border-radius: var(--radius-sm); background: var(--accent); color: var(--accent-contrast); font-weight: 800; }
   .document-heading { justify-content: space-between; gap: var(--space-5); margin-bottom: var(--space-5); }
-  .document-heading h1, .transcript-card h2 { margin: 3px 0 0; }
+  .document-heading h1, .content-panel h2 { margin: 3px 0 0; }
   .document-heading p { margin: 5px 0 0; color: var(--text-muted); }
   .actions { flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
   .eyebrow { color: var(--accent); font-size: var(--font-size-xs); font-weight: 750; letter-spacing: .09em; }
-  .metadata-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); margin-bottom: var(--space-4); }
+  .content-tabs { margin-bottom: var(--space-4); }
+  .tab-list { display: flex; gap: var(--space-1); padding: 0 var(--space-2); border-bottom: 1px solid var(--border); }
+  .tab-list button { position: relative; padding: var(--space-3) var(--space-4); border: 0; background: transparent; color: var(--text-muted); font: inherit; font-weight: 700; cursor: pointer; }
+  .tab-list button[aria-selected="true"] { color: var(--text); }
+  .tab-list button[aria-selected="true"]::after { position: absolute; right: var(--space-2); bottom: -1px; left: var(--space-2); height: 2px; background: var(--accent); content: ""; }
+  .tab-list button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .content-panel { padding-top: var(--space-3); }
+  .metadata-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); padding-top: var(--space-3); }
+  .technical-details { margin-bottom: var(--space-4); }
+  .technical-details summary { width: fit-content; padding: var(--space-2) 0; color: var(--text-muted); font-size: var(--font-size-sm); font-weight: 700; cursor: pointer; }
   dl { display: grid; gap: var(--space-3); margin: 0; }
   dl > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: var(--space-3); align-items: start; }
   dt { color: var(--text-muted); font-size: var(--font-size-xs); text-transform: uppercase; letter-spacing: .05em; }
   dd { min-width: 0; margin: 0; }
   .identity dd { display: flex; align-items: center; gap: var(--space-1); }
   code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .transcript-card header { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--space-3); padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--border); }
-  .transcript-card header > span, .muted { color: var(--text-muted); font-size: var(--font-size-sm); }
+  .content-panel header { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--space-3); padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--border); }
+  .content-panel header > span, .muted { color: var(--text-muted); font-size: var(--font-size-sm); }
   pre { margin: 0; padding: var(--space-5); white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.7; }
   footer { padding: 0 var(--space-5) var(--space-5); }
   .integrity-note, .loading { gap: var(--space-2); color: var(--text-muted); font-size: var(--font-size-sm); }
@@ -296,6 +372,6 @@
     .actions { justify-content: flex-start; }
     .metadata-grid { grid-template-columns: 1fr; }
     dl > div { grid-template-columns: 90px minmax(0, 1fr); }
-    .transcript-card header { align-items: flex-start; flex-direction: column; }
+    .content-panel header { align-items: flex-start; flex-direction: column; }
   }
 </style>

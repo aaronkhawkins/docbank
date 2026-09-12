@@ -5,6 +5,7 @@ import DocumentViewer from "./DocumentViewer.svelte";
 afterEach(() => {
   cleanup();
   history.replaceState(null, "", "/");
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -78,14 +79,43 @@ function viewer(offset: number) {
   };
 }
 
+function preparedOriginal(url = "/api/daemon/web-download/file?ticket=preview") {
+  return new Response(
+    `${JSON.stringify({
+      phase: "ready",
+      received: 2048,
+      total: 2048,
+      url,
+      name: "registration.pdf",
+      version_id: versionID,
+      blob_hash: sourceHash,
+    })}\n`,
+    { status: 200 },
+  );
+}
+
 it("opens a pinned historical original and its OCR through an in-memory session", async () => {
   history.replaceState(null, "", `/documents/42/versions/${versionID}`);
+  const createObjectURL = vi.fn().mockReturnValue("blob:verified-original");
+  const revokeObjectURL = vi.fn();
+  vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
   const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
     const path = String(input);
     if (path === "/api/daemon/web-session") {
       return json({ token: "bounded", upload_secret: "unused", url: "http://127.0.0.1/private" }, 201);
     }
     if (path.includes("offset=0")) return json(viewer(0));
+    if (path === "/api/daemon/web-download") return preparedOriginal();
+    if (path === "/api/daemon/web-download/file?ticket=preview") {
+      return new Response(new Uint8Array(2048), {
+        headers: {
+          "Content-Type": "application/pdf",
+          "X-Docbank-Content-Version": versionID,
+          "X-Docbank-Blob-Hash": sourceHash,
+          "X-Docbank-Blob-Size": "2048",
+        },
+      });
+    }
     if (path.includes("offset=1") && path.includes(`build_id=${buildID}`)) {
       return json(viewer(1));
     }
@@ -96,12 +126,24 @@ it("opens a pinned historical original and its OCR through an in-memory session"
 
   expect(await screen.findByRole("heading", { name: "registration.pdf" })).toBeTruthy();
   expect(screen.getByText("Historical")).toBeTruthy();
-  expect(screen.getByText(versionID)).toBeTruthy();
-  expect(screen.getByText("Synthetic registration transcript")).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "Original" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("tab", { name: "OCR" }).getAttribute("aria-selected")).toBe("false");
+  expect((await screen.findByTitle("Original registration.pdf")).getAttribute("src")).toBe(
+    "blob:verified-original#view=Fit&navpanes=0",
+  );
   expect(screen.getByRole("button", { name: /Download original/ })).toBeTruthy();
+  const technicalDetails = screen.getByText("Technical details").closest("details");
+  expect(technicalDetails?.open).toBe(false);
   expect(location.hash).toBe("");
   expect(sessionStorage.length).toBe(0);
 
+  await fireEvent.keyDown(screen.getByRole("tab", { name: "Original" }), { key: "ArrowRight" });
+  expect(screen.getByRole("tab", { name: "OCR" }).getAttribute("aria-selected")).toBe("true");
+  await fireEvent.keyDown(screen.getByRole("tab", { name: "OCR" }), { key: "ArrowLeft" });
+  expect(screen.getByRole("tab", { name: "Original" }).getAttribute("aria-selected")).toBe("true");
+
+  await fireEvent.click(screen.getByRole("tab", { name: "OCR" }));
+  expect(screen.getByText("Synthetic registration transcript")).toBeTruthy();
   await fireEvent.click(screen.getByRole("button", { name: "Load more" }));
   await waitFor(() => expect(screen.getByText(/Second page/)).toBeTruthy());
 
@@ -111,6 +153,82 @@ it("opens a pinned historical original and its OCR through an in-memory session"
   for (const [, request] of viewerCalls) {
     expect(new Headers(request?.headers).get("X-Docbank-Web-Session")).toBe("bounded");
   }
+  expect(JSON.parse(String(fetchMock.mock.calls.find(([path]) => String(path) === "/api/daemon/web-download")?.[1]?.body))).toMatchObject({
+    version_id: versionID,
+    blob_hash: sourceHash,
+    size: 2048,
+  });
+
+  await fireEvent.click(screen.getByRole("button", { name: "Lock document session" }));
+  expect(revokeObjectURL).toHaveBeenCalledWith("blob:verified-original");
+});
+
+it("falls back to verified download when the original cannot be safely previewed", async () => {
+  history.replaceState(null, "", `/documents/42/versions/${versionID}`);
+  const unsupported = viewer(0);
+  unsupported.node.name = "registration.svg";
+  unsupported.version.mime_type = "image/svg+xml";
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, request) => {
+    const path = String(input);
+    if (path === "/api/daemon/web-session" && request?.method === "POST") {
+      return json({ token: "bounded", upload_secret: "unused" }, 201);
+    }
+    if (path.includes("/viewer?")) return json(unsupported);
+    throw new Error(`unexpected request ${path}`);
+  });
+
+  render(DocumentViewer);
+
+  expect(await screen.findByText("Preview unavailable for this file type.")).toBeTruthy();
+  expect(screen.getByRole("button", { name: /Download original/ })).toBeTruthy();
+  expect(fetch).not.toHaveBeenCalledWith("/api/daemon/web-download", expect.anything());
+});
+
+it("aborts an in-flight original preview and ignores its late completion when locked", async () => {
+  history.replaceState(null, "", `/documents/42/versions/${versionID}`);
+  const pendingBytes = deferred<Blob>();
+  const original = new Response(new Uint8Array(2048), {
+    headers: {
+      "Content-Type": "application/pdf",
+      "X-Docbank-Content-Version": versionID,
+      "X-Docbank-Blob-Hash": sourceHash,
+      "X-Docbank-Blob-Size": "2048",
+    },
+  });
+  const readBytes = vi.spyOn(original, "blob").mockReturnValue(pendingBytes.promise);
+  const cancel = vi.spyOn(original.body!, "cancel");
+  const createObjectURL = vi.fn().mockReturnValue("blob:late-original");
+  vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL: vi.fn() });
+  let originalSignal: AbortSignal | undefined;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, request) => {
+    const path = String(input);
+    if (path === "/api/daemon/web-session" && request?.method === "POST") {
+      return json({ token: "bounded", upload_secret: "unused" }, 201);
+    }
+    if (path.includes("/viewer?")) return json(viewer(0));
+    if (path === "/api/daemon/web-download") {
+      return preparedOriginal();
+    }
+    if (path === "/api/daemon/web-download/file?ticket=preview") {
+      originalSignal = request?.signal ?? undefined;
+      return original;
+    }
+    if (path === "/api/daemon/web-session" && request?.method === "DELETE") {
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected request ${path}`);
+  });
+
+  render(DocumentViewer);
+  const lock = await screen.findByRole("button", { name: "Lock document session" });
+  await waitFor(() => expect(readBytes).toHaveBeenCalledOnce());
+  await fireEvent.click(lock);
+  expect(originalSignal?.aborted).toBe(true);
+
+  pendingBytes.resolve(new Blob([new Uint8Array(2048)], { type: "application/pdf" }));
+  await waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+  expect(createObjectURL).not.toHaveBeenCalled();
+  expect(screen.queryByTitle("Original registration.pdf")).toBeNull();
 });
 
 it("rejects malformed document links before session bootstrap", async () => {

@@ -26,7 +26,15 @@ inspection and PR attachment; the current case captures both move-to-trash and
 restore confirmations, the tag-definition catalog, and a completed tag
 assignment, current vault browsing, extracted-text search, retained-version
 selection, packed-storage status, and independently verified permanent-audit
-evidence. Generated images are intentionally not committed.
+evidence. The original-preview cases import a generated PDF and image, verify
+the displayed bytes against the originals, and capture desktop and phone
+layouts. Generated images remain untracked unless an inspected capture is
+selected as a PR attachment.
+
+The preview cases use full Chromium for its native PDF viewer and disable
+`PdfOopif` in the screenshot harness. With that Chromium feature enabled, the
+PDF plugin surface can be clipped to 300px in captures even though the viewer
+frame has the correct dimensions. This setting does not change the application.
 
 Pass ordinary Playwright arguments after `--` to select a case:
 
