@@ -27,6 +27,8 @@ type SuppliedOCRPublicationInput struct {
 	ContentVersionID string
 	SubmissionKey    string
 	Result           document.SuppliedOCRResult
+	// Preserve exact retries of publications stored before submission-scoped requests.
+	LegacyRequestIdentity bool
 }
 
 // SuppliedOCRPublicationCandidate is a complete dormant publication plus the
@@ -107,7 +109,11 @@ func BuildSuppliedOCRPublicationCandidate(
 		return SuppliedOCRPublicationCandidate{}, err
 	}
 	materialChecksum := suppliedOCRSHA256(materialBytes)
-	profile, err := suppliedOCRProcessingProfile(materialChecksum, input.Result.ManifestSHA256)
+	requestIdentity := input.SubmissionKey
+	if input.LegacyRequestIdentity {
+		requestIdentity = ""
+	}
+	profile, err := suppliedOCRProcessingProfile(materialChecksum, input.Result.ManifestSHA256, requestIdentity)
 	if err != nil {
 		return SuppliedOCRPublicationCandidate{}, err
 	}
@@ -193,9 +199,14 @@ func BuildSuppliedOCRPublicationCandidate(
 	}}, nil
 }
 
-func suppliedOCRProcessingProfile(materialChecksum, manifestSHA256 string) (store.ProcessingProfileRecord, error) {
+func suppliedOCRProcessingProfile(materialChecksum, manifestSHA256, submissionKey string) (store.ProcessingProfileRecord, error) {
 	fingerprint := func(subject string) string {
 		return suppliedOCRSHA256([]byte("docbank:supplied-ocr-profile:v1\x00" + subject))
+	}
+	uploadIdentity := "no-upload"
+	if submissionKey != "" {
+		// A supplied result is a distinct request even when its source bytes match.
+		uploadIdentity = "submission:" + submissionKey
 	}
 	profile := document.ProcessingProfileV1{
 		ContractVersion: document.ProcessingProfileContractV1,
@@ -209,7 +220,7 @@ func suppliedOCRProcessingProfile(materialChecksum, manifestSHA256 string) (stor
 			RequestedArtifacts: []document.EvidenceArtifactRole{
 				document.EvidenceArtifactStructured, document.EvidenceArtifactTranscript,
 			},
-			TrustBoundary: "caller-supplied-local", UploadOptionsFingerprint: fingerprint("no-upload"),
+			TrustBoundary: "caller-supplied-local", UploadOptionsFingerprint: fingerprint(uploadIdentity),
 		},
 		EvidenceLexical: document.EvidenceLexicalPolicyV1{
 			CompletenessFingerprint:     fingerprint("degraded-provenance"),
