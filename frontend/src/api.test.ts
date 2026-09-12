@@ -4,13 +4,16 @@ import {
   auditHistory,
   auditStatusForNode,
   backupSnapshots,
+  bootstrapBrowserSession,
   changeNodeTag,
   contentVersions,
   createTag,
   deleteTag,
+  documentViewer,
   listJobs,
   liveTaggedNodes,
   nodeTags,
+  parseDocumentViewerPath,
   requestJSON,
   renameTag,
   restoreNode,
@@ -63,6 +66,65 @@ describe("browser authentication", () => {
     const headers = new Headers(request?.headers);
     expect(headers.get("X-Docbank-Web-Session")).toBe("secret");
     expect(headers.get("X-Api-Key")).toBeNull();
+  });
+
+  it("recognizes only canonical exact-version document paths", () => {
+    const version = "11111111-1111-4111-8111-111111111111";
+    expect(parseDocumentViewerPath(`/documents/42/versions/${version}`)).toEqual({
+      nodeID: 42,
+      versionID: version,
+    });
+    for (const path of [
+      `/documents/0/versions/${version}`,
+      `/documents/01/versions/${version}`,
+      `/documents/42/versions/${"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".toUpperCase()}`,
+      "/documents/42/versions/not-a-version",
+      `/documents/42/versions/${version}/content`,
+    ]) {
+      expect(parseDocumentViewerPath(path)).toBeNull();
+    }
+  });
+
+  it("bootstraps a same-origin bounded session without sending a credential", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ token: "bounded", upload_secret: "proof", url: "http://127.0.0.1/internal" }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(bootstrapBrowserSession()).resolves.toEqual({
+      token: "bounded",
+      uploadSecret: "proof",
+    });
+    const [path, request] = fetchMock.mock.calls[0] ?? [];
+    expect(path).toBe("/api/daemon/web-session");
+    expect(request?.method).toBe("POST");
+    expect(request?.credentials).toBe("same-origin");
+    expect(request?.cache).toBe("no-store");
+    const headers = new Headers(request?.headers);
+    expect(headers.get("Authorization")).toBeNull();
+    expect(headers.get("X-Api-Key")).toBeNull();
+    expect(headers.get("X-Docbank-Web-Session")).toBeNull();
+  });
+
+  it("pins OCR pagination to the first response build", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ node: {}, version: {} }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const versionID = "11111111-1111-4111-8111-111111111111";
+    await documentViewer(
+      "session",
+      { nodeID: 42, versionID },
+      100,
+      "a".repeat(64),
+    );
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      `/api/v1/nodes/42/versions/${versionID}/viewer?limit=100&offset=100&build_id=${"a".repeat(64)}`,
+    );
   });
 
   it("revokes the session when the interface locks", async () => {

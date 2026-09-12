@@ -3,9 +3,12 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"math"
+
+	"go.kenn.io/docbank/document"
 )
 
 // ContentVersion is one immutable byte identity recorded for a stable file
@@ -31,6 +34,33 @@ type ContentVersion struct {
 type ContentVersionView struct {
 	Node    Node
 	Version ContentVersion
+}
+
+// DocumentViewerView binds one stable node/version pair, its live display
+// path, and the newest active rendition text page to one read snapshot.
+// Rendition artifacts and provider payloads remain outside this human-facing
+// projection.
+type DocumentViewerView struct {
+	Node      Node
+	Path      string
+	Version   ContentVersion
+	Rendition *DocumentViewerRendition
+}
+
+// DocumentViewerRendition is the bounded lexical and integrity projection of
+// one active immutable rendition build.
+type DocumentViewerRendition struct {
+	BuildID          string
+	SourceSHA256     string
+	EvidenceChecksum string
+	Completeness     document.EvidenceCompleteness
+	BuildTruncated   bool
+	Warnings         []string
+	PublishedAt      string
+	Segments         []RenditionLexicalSegmentRecord
+	Total            int
+	Limit            int
+	Offset           int
 }
 
 const contentVersionCols = `version_id, node_id, blob_hash,
@@ -98,6 +128,141 @@ func (s *Store) ContentVersionViewByID(
 		return ContentVersionView{}, fmt.Errorf("closing content-version snapshot: %w", err)
 	}
 	return ContentVersionView{Node: node, Version: version}, nil
+}
+
+// DocumentViewer returns the exact retained version named by the caller and a
+// bounded page from its newest active rendition. Node/version ownership and
+// rendition attachment are checked in the same read transaction.
+func (s *Store) DocumentViewer(
+	ctx context.Context, nodeID int64, versionID, requestedBuildID string, limit, offset int,
+) (DocumentViewerView, error) {
+	if err := validateUUIDv4(versionID); err != nil {
+		return DocumentViewerView{}, fmt.Errorf("content version %q: %w", versionID, ErrNotFound)
+	}
+	if limit < 1 || limit > 100 {
+		return DocumentViewerView{}, errors.New("document viewer limit must be between 1 and 100")
+	}
+	if offset < 0 {
+		return DocumentViewerView{}, errors.New("document viewer offset must not be negative")
+	}
+	if requestedBuildID != "" {
+		if err := validateCatalogSHA256(requestedBuildID, "document viewer build ID"); err != nil {
+			return DocumentViewerView{}, fmt.Errorf("document viewer build: %w", ErrNotFound)
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return DocumentViewerView{}, fmt.Errorf("starting document-viewer snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	node, err := nodeByIDTx(tx, nodeID)
+	if err != nil {
+		return DocumentViewerView{}, err
+	}
+	if node.IsDir() {
+		return DocumentViewerView{}, fmt.Errorf("node %d: %w", nodeID, ErrNotFile)
+	}
+	if node.TrashedAt != nil {
+		return DocumentViewerView{}, fmt.Errorf("node %d: %w", nodeID, ErrNotFound)
+	}
+	version, err := scanContentVersion(tx.QueryRowContext(ctx,
+		`SELECT `+contentVersionCols+` FROM content_versions WHERE version_id=? AND node_id=?`,
+		versionID, nodeID))
+	if err != nil {
+		return DocumentViewerView{}, fmt.Errorf(
+			"content version %q of node %d: %w", versionID, nodeID, err)
+	}
+	view := DocumentViewerView{Node: node, Version: version}
+	view.Path, err = pathOf(ctx, tx, node.ID)
+	if err != nil {
+		return DocumentViewerView{}, err
+	}
+
+	var buildID, publishedAt string
+	if requestedBuildID == "" {
+		err = tx.QueryRowContext(ctx, `
+			SELECT a.build_id,h.published_at
+			FROM rendition_heads h
+			JOIN rendition_attachments a ON a.attachment_id=h.attachment_id
+			WHERE h.content_version_id=?
+			ORDER BY h.published_at DESC,a.attachment_id DESC LIMIT 1`, versionID,
+		).Scan(&buildID, &publishedAt)
+	} else {
+		err = tx.QueryRowContext(ctx, `
+			SELECT a.build_id,h.published_at
+			FROM rendition_heads h
+			JOIN rendition_attachments a ON a.attachment_id=h.attachment_id
+			WHERE h.content_version_id=? AND a.build_id=? LIMIT 1`, versionID, requestedBuildID,
+		).Scan(&buildID, &publishedAt)
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return DocumentViewerView{}, fmt.Errorf("reading document-viewer rendition: %w", err)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		if requestedBuildID != "" {
+			return DocumentViewerView{}, fmt.Errorf("document viewer build %q: %w", requestedBuildID, ErrNotFound)
+		}
+		if err := tx.Commit(); err != nil {
+			return DocumentViewerView{}, fmt.Errorf("closing document-viewer snapshot: %w", err)
+		}
+		return view, nil
+	}
+	if err := validateRenditionBuildStateTx(ctx, tx, buildID); err != nil {
+		return DocumentViewerView{}, err
+	}
+	rendition := &DocumentViewerRendition{
+		BuildID: buildID, PublishedAt: publishedAt,
+		Segments: []RenditionLexicalSegmentRecord{}, Limit: limit, Offset: offset,
+	}
+	var truncated int
+	var warnings string
+	err = tx.QueryRowContext(ctx, `
+		SELECT source_sha256,evidence_checksum,completeness,truncated,warnings_json,
+		       lexical_segment_count
+		FROM rendition_builds WHERE build_id=?`, buildID,
+	).Scan(&rendition.SourceSHA256, &rendition.EvidenceChecksum, &rendition.Completeness,
+		&truncated, &warnings, &rendition.Total)
+	if err != nil {
+		return DocumentViewerView{}, fmt.Errorf("reading document-viewer build: %w", err)
+	}
+	if rendition.SourceSHA256 != version.BlobHash {
+		return DocumentViewerView{}, fmt.Errorf(
+			"rendition build %s source does not match content version %s", buildID, versionID)
+	}
+	rendition.BuildTruncated = truncated != 0
+	if err := json.Unmarshal([]byte(warnings), &rendition.Warnings); err != nil {
+		return DocumentViewerView{}, fmt.Errorf("decoding document-viewer warnings: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT segment_id,unit_id,segment_order,char_start,char_end,checksum,text
+		FROM rendition_lexical_segments WHERE build_id=?
+		ORDER BY segment_order,segment_id LIMIT ? OFFSET ?`, buildID, limit, offset)
+	if err != nil {
+		return DocumentViewerView{}, fmt.Errorf("reading document-viewer text: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var segment RenditionLexicalSegmentRecord
+		if err := rows.Scan(&segment.ID, &segment.UnitID, &segment.Order, &segment.CharStart,
+			&segment.CharEnd, &segment.Checksum, &segment.Text); err != nil {
+			_ = rows.Close()
+			return DocumentViewerView{}, err
+		}
+		rendition.Segments = append(rendition.Segments, segment)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return DocumentViewerView{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return DocumentViewerView{}, err
+	}
+	view.Rendition = rendition
+	if err := tx.Commit(); err != nil {
+		return DocumentViewerView{}, fmt.Errorf("closing document-viewer snapshot: %w", err)
+	}
+	return view, nil
 }
 
 // ContentVersions lists one bounded page newest-first and returns the total

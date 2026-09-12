@@ -37,6 +37,29 @@ Every file also exposes its retained immutable content versions and the stable
 authority behind each one, plus the immutable provenance Docbank recorded when
 the document entered the vault.
 
+## Open a saved document link
+
+A document link has the form
+`/documents/<node-id>/versions/<version-id>`. It opens that retained version
+even after the live document is renamed or replaced. The page shows the
+document's current name and path, labels the saved version as current or
+historical, offers a verified download of its original bytes, and displays its
+active OCR or transcript with processing hashes when one has been published.
+The provenance button opens the document's existing ingest history.
+
+When no CLI-created session is present in the URL fragment, the page requests
+a browser session from the same origin. A reverse proxy can authorize that
+single session request before forwarding it to Docbank; the vault API key does
+not enter browser code or storage. The returned token remains in memory and is
+limited to the built-in browser routes. The document page does not open the
+verified-upload WebSocket. The normal local `docbank web` flow still consumes
+its one-time fragment and keeps upload available in the vault browser.
+
+The node ID and version UUID are both required. A malformed link, a version
+owned by another node, an unavailable OCR build continuation, or a trashed
+document returns not found instead of falling back to current content. Each OCR
+continuation stays pinned to the first response's active processing build.
+
 The browser is another client of the authenticated HTTP API. It does not open
 SQLite or the blob store, and it has no private route that the CLI or an agent
 cannot use. The daemon remains loopback-only.

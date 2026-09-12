@@ -76,6 +76,122 @@ func TestEvidenceSearchIsExplicitlyLexicalAndCitesNameAuthority(t *testing.T) {
 	assert.Empty(t, report.Hits[0].BlobHash)
 }
 
+func TestDocumentViewerBindsHistoricalVersionAndOCRToNode(t *testing.T) {
+	ts, s := newTestServer(t, nil)
+	node := createFileWithContent(t, ts, s, "/report.pdf", "first edition")
+	historical, err := s.ContentVersionByID(t.Context(), node.CurrentVersionID)
+	require.NoError(t, err)
+	replacementHash, replacementSize, err := s.Blobs.Write(strings.NewReader("second edition"))
+	require.NoError(t, err)
+	current, _, err := s.ReplaceContent(t.Context(), node.ID, node.Revision,
+		replacementHash, replacementSize, "application/pdf")
+	require.NoError(t, err)
+	current, renamedPath, err := s.Move(
+		t.Context(), current.ID, s.RootID(), "renamed-report.pdf", current.Revision,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "/renamed-report.pdf", renamedPath)
+
+	in := suppliedOCRFixtureInput(node.ID, historical.ID, historical.BlobHash)
+	resp, body := sendSuppliedOCR(t, ts.URL, ts.Client(), in, nil)
+	require.Equal(t, http.StatusCreated, resp.StatusCode, body)
+
+	resp, body = do(t, ts, http.MethodPost, "/api/daemon/web-session", nil, nil)
+	require.Equal(t, http.StatusCreated, resp.StatusCode, body)
+	var session struct {
+		Token string `json:"token"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &session))
+	headers := map[string]string{"X-Api-Key": "", api.WebSessionHeader: session.Token}
+	path := fmt.Sprintf("/api/v1/nodes/%d/versions/%s/viewer?limit=100&offset=0",
+		node.ID, historical.ID)
+	resp, body = get(t, ts, path, headers)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+
+	var got struct {
+		Node struct {
+			ID       int64  `json:"id"`
+			Name     string `json:"name"`
+			Path     string `json:"path"`
+			Revision int64  `json:"revision"`
+		} `json:"node"`
+		Version struct {
+			ID       string `json:"id"`
+			BlobHash string `json:"blob_hash"`
+		} `json:"version"`
+		Rendition *struct {
+			BuildID          string `json:"build_id"`
+			SourceSHA256     string `json:"source_sha256"`
+			EvidenceChecksum string `json:"evidence_checksum"`
+			PublishedAt      string `json:"published_at"`
+			Total            int    `json:"total"`
+			Segments         []struct {
+				Text string `json:"text"`
+			} `json:"segments"`
+		} `json:"rendition"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &got))
+	assert.Equal(t, node.ID, got.Node.ID)
+	assert.Equal(t, "renamed-report.pdf", got.Node.Name)
+	assert.Equal(t, "/renamed-report.pdf", got.Node.Path)
+	assert.Equal(t, current.Revision, got.Node.Revision)
+	assert.Equal(t, historical.ID, got.Version.ID)
+	assert.Equal(t, historical.BlobHash, got.Version.BlobHash)
+	require.NotNil(t, got.Rendition)
+	assert.Len(t, got.Rendition.BuildID, 64)
+	assert.Len(t, got.Rendition.EvidenceChecksum, 64)
+	assert.Equal(t, historical.BlobHash, got.Rendition.SourceSHA256)
+	assert.NotEmpty(t, got.Rendition.PublishedAt)
+	assert.Equal(t, 1, got.Rendition.Total)
+	require.Len(t, got.Rendition.Segments, 1)
+	assert.Contains(t, got.Rendition.Segments[0].Text, "Synthetic registration")
+	assert.Contains(t, got.Rendition.Segments[0].Text, "TEST")
+
+	pinnedPath := path + "&build_id=" + got.Rendition.BuildID
+	resp, body = get(t, ts, pinnedPath, headers)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	var pinned struct {
+		Version struct {
+			ID string `json:"id"`
+		} `json:"version"`
+		Rendition struct {
+			BuildID      string `json:"build_id"`
+			SourceSHA256 string `json:"source_sha256"`
+		} `json:"rendition"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &pinned))
+	assert.Equal(t, historical.ID, pinned.Version.ID)
+	assert.Equal(t, got.Rendition.BuildID, pinned.Rendition.BuildID)
+	assert.Equal(t, historical.BlobHash, pinned.Rendition.SourceSHA256)
+
+	resp, body = get(t, ts, path+"&build_id="+strings.Repeat("0", 64), headers)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode, body)
+	assert.Contains(t, body, `"code":"not_found"`)
+}
+
+func TestDocumentViewerRejectsMalformedAndWrongNodeVersionPairs(t *testing.T) {
+	ts, s := newTestServer(t, nil)
+	first := createFileWithContent(t, ts, s, "/first.pdf", "first")
+	second := createFileWithContent(t, ts, s, "/second.pdf", "second")
+
+	paths := []string{
+		fmt.Sprintf("/api/v1/nodes/%d/versions/not-a-uuid/viewer", first.ID),
+		fmt.Sprintf("/api/v1/nodes/%d/versions/%s/viewer", second.ID, first.CurrentVersionID),
+	}
+	for _, path := range paths {
+		resp, body := get(t, ts, path, nil)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode, body)
+		assert.Contains(t, body, `"code":"not_found"`)
+	}
+	trashed, _, err := s.Trash(t.Context(), first.ID, first.Revision)
+	require.NoError(t, err)
+	resp, body := get(t, ts, fmt.Sprintf(
+		"/api/v1/nodes/%d/versions/%s/viewer", trashed.ID, first.CurrentVersionID,
+	), nil)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode, body)
+	assert.Contains(t, body, `"code":"not_found"`)
+}
+
 func TestStatAndContentVersionDetailExposeActiveSourceMetadata(t *testing.T) {
 	ts, s := newTestServer(t, nil)
 	node, err := s.CreateFile(t.Context(), s.RootID(), "report.pdf", testHash("metadata"), 9, "application/pdf")
