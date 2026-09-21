@@ -550,10 +550,15 @@ type EvidenceSearchHit struct {
 
 // EvidenceSearchReport is one bounded, explicitly lexical result page.
 type EvidenceSearchReport struct {
-	Mode      string              `json:"mode" enum:"lexical"`
-	Hits      []EvidenceSearchHit `json:"hits"`
-	Limit     int                 `json:"limit" minimum:"1" maximum:"100"`
-	Truncated bool                `json:"truncated"`
+	Mode           string              `json:"mode" enum:"lexical"`
+	Hits           []EvidenceSearchHit `json:"hits"`
+	Limit          int                 `json:"limit" minimum:"1" maximum:"100"`
+	Truncated      bool                `json:"truncated"`
+	TagID          string              `json:"tag_id,omitzero"`
+	MIMEType       string              `json:"mime_type,omitzero"`
+	UnderNodeID    int64               `json:"under_node_id,omitzero"`
+	ModifiedSince  string              `json:"modified_since,omitzero"`
+	ModifiedBefore string              `json:"modified_before,omitzero"`
 }
 
 // RenditionTextSegment is one immutable, addressable lexical evidence span.

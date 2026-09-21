@@ -831,21 +831,35 @@ func (c *Client) Search(ctx context.Context, query string, limit int) (api.Searc
 // SearchEvidence returns an explicitly lexical result set whose hits carry
 // immutable evidence identities suitable for agent citations.
 func (c *Client) SearchEvidence(
-	ctx context.Context, query string, limit int,
+	ctx context.Context, query string, limit int, opts SearchOptions,
 ) (api.EvidenceSearchReport, error) {
 	var report api.EvidenceSearchReport
-	if strings.TrimSpace(query) == "" {
-		return report, errors.New("evidence search query must not be empty")
+	if strings.TrimSpace(query) == "" || utf8.RuneCountInString(query) > 4096 {
+		return report, errors.New("evidence search query must be between 1 and 4096 characters")
 	}
 	if limit < 1 || limit > 100 {
 		return report, errors.New("evidence search limit must be between 1 and 100")
 	}
-	path := "/api/v1/evidence/search?q=" + url.QueryEscape(query) + "&limit=" + strconv.Itoa(limit)
+	normalized, err := normalizeSearchOptions(opts)
+	if err != nil {
+		return report, errors.New("evidence search filters are invalid")
+	}
+	queryValues := url.Values{}
+	queryValues.Set("q", query)
+	queryValues.Set("limit", strconv.Itoa(limit))
+	appendSearchOptions(queryValues, normalized)
+	path := "/api/v1/evidence/search?" + queryValues.Encode()
 	if err := c.do(ctx, http.MethodGet, path, nil, nil, &report); err != nil {
 		return api.EvidenceSearchReport{}, err
 	}
 	if report.Mode != "lexical" || report.Limit != limit || len(report.Hits) > limit {
 		return api.EvidenceSearchReport{}, errors.New("evidence search response has inconsistent authority")
+	}
+	if report.TagID != normalized.TagID || report.MIMEType != normalized.MIMEType ||
+		report.UnderNodeID != normalized.UnderNodeID ||
+		report.ModifiedSince != normalized.ModifiedSince ||
+		report.ModifiedBefore != normalized.ModifiedBefore {
+		return api.EvidenceSearchReport{}, errors.New("evidence search response has inconsistent filter authority")
 	}
 	for _, hit := range report.Hits {
 		if hit.Node.ID < 1 || !validUUIDv4(hit.Node.CurrentVersionID) ||
@@ -913,49 +927,64 @@ func (c *Client) SearchWithOptions(
 	ctx context.Context, query string, limit int, opts SearchOptions,
 ) (api.SearchReport, error) {
 	var out api.SearchReport
-	if opts.TagID != "" && !validUUIDv4(opts.TagID) {
-		return out, errors.New("search tag ID must be a canonical UUIDv4")
-	}
-	mimeType, err := store.NormalizeSearchMIMEType(opts.MIMEType)
-	if err != nil {
-		return out, err
-	}
-	if opts.UnderNodeID < 0 {
-		return out, errors.New("search directory node ID must be positive")
-	}
-	modifiedSince, modifiedBefore, err := store.NormalizeSearchTimeBounds(
-		opts.ModifiedSince, opts.ModifiedBefore,
-	)
+	normalized, err := normalizeSearchOptions(opts)
 	if err != nil {
 		return out, err
 	}
 	queryValues := url.Values{}
 	queryValues.Set("q", query)
 	queryValues.Set("limit", strconv.Itoa(limit))
+	appendSearchOptions(queryValues, normalized)
+	if err := c.do(ctx, http.MethodGet, "/api/v1/search?"+queryValues.Encode(), nil, nil, &out); err != nil {
+		return out, err
+	}
+	if out.TagID != normalized.TagID || out.MIMEType != normalized.MIMEType ||
+		out.UnderNodeID != normalized.UnderNodeID || out.ModifiedSince != normalized.ModifiedSince ||
+		out.ModifiedBefore != normalized.ModifiedBefore {
+		return api.SearchReport{}, errors.New("search response has inconsistent filter authority")
+	}
+	return out, nil
+}
+
+func normalizeSearchOptions(opts SearchOptions) (SearchOptions, error) {
+	if opts.TagID != "" && !validUUIDv4(opts.TagID) {
+		return SearchOptions{}, errors.New("search tag ID must be a canonical UUIDv4")
+	}
+	mimeType, err := store.NormalizeSearchMIMEType(opts.MIMEType)
+	if err != nil {
+		return SearchOptions{}, err
+	}
+	if opts.UnderNodeID < 0 {
+		return SearchOptions{}, errors.New("search directory node ID must be positive")
+	}
+	modifiedSince, modifiedBefore, err := store.NormalizeSearchTimeBounds(
+		opts.ModifiedSince, opts.ModifiedBefore,
+	)
+	if err != nil {
+		return SearchOptions{}, err
+	}
+	opts.MIMEType = mimeType
+	opts.ModifiedSince = modifiedSince
+	opts.ModifiedBefore = modifiedBefore
+	return opts, nil
+}
+
+func appendSearchOptions(queryValues url.Values, opts SearchOptions) {
 	if opts.TagID != "" {
 		queryValues.Set("tag_id", opts.TagID)
 	}
-	if mimeType != "" {
-		queryValues.Set("mime_type", mimeType)
+	if opts.MIMEType != "" {
+		queryValues.Set("mime_type", opts.MIMEType)
 	}
 	if opts.UnderNodeID != 0 {
 		queryValues.Set("under_node_id", strconv.FormatInt(opts.UnderNodeID, 10))
 	}
-	if modifiedSince != "" {
-		queryValues.Set("modified_since", modifiedSince)
+	if opts.ModifiedSince != "" {
+		queryValues.Set("modified_since", opts.ModifiedSince)
 	}
-	if modifiedBefore != "" {
-		queryValues.Set("modified_before", modifiedBefore)
+	if opts.ModifiedBefore != "" {
+		queryValues.Set("modified_before", opts.ModifiedBefore)
 	}
-	if err := c.do(ctx, http.MethodGet, "/api/v1/search?"+queryValues.Encode(), nil, nil, &out); err != nil {
-		return out, err
-	}
-	if out.TagID != opts.TagID || out.MIMEType != mimeType ||
-		out.UnderNodeID != opts.UnderNodeID || out.ModifiedSince != modifiedSince ||
-		out.ModifiedBefore != modifiedBefore {
-		return api.SearchReport{}, errors.New("search response has inconsistent filter authority")
-	}
-	return out, nil
 }
 
 // AuditPreviewOptions selects one live directory for permanent enrollment.

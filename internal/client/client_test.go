@@ -233,6 +233,61 @@ func TestSearchWithOptionsUsesStableTagIdentity(t *testing.T) {
 	require.ErrorContains(t, err, "must be earlier")
 }
 
+func TestSearchEvidenceUsesStableFilterAuthority(t *testing.T) {
+	c, s := newClient(t, serverKey)
+	ctx := t.Context()
+	tag, err := s.CreateTag(ctx, "renewal")
+	require.NoError(t, err)
+	directory, err := s.Mkdir(ctx, s.RootID(), "policies")
+	require.NoError(t, err)
+	matching, err := s.CreateFile(ctx, directory.ID, "insurance-renewal.pdf",
+		strings.Repeat("a", 64), 1, "application/pdf")
+	require.NoError(t, err)
+	_, err = s.CreateFile(ctx, s.RootID(), "insurance-draft.pdf",
+		strings.Repeat("b", 64), 1, "application/pdf")
+	require.NoError(t, err)
+	_, err = s.AssignTag(ctx, tag.ID, matching.ID, matching.Revision)
+	require.NoError(t, err)
+
+	report, err := c.SearchEvidence(ctx, "insurance", 10, client.SearchOptions{
+		TagID: tag.ID, MIMEType: "APPLICATION/PDF", UnderNodeID: directory.ID,
+		ModifiedSince: "2000-01-01T00:00:00-05:00", ModifiedBefore: "2100-01-01T00:00:00Z",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, tag.ID, report.TagID)
+	assert.Equal(t, "application/pdf", report.MIMEType)
+	assert.Equal(t, directory.ID, report.UnderNodeID)
+	assert.Equal(t, "2000-01-01T05:00:00.000000000Z", report.ModifiedSince)
+	assert.Equal(t, "2100-01-01T00:00:00.000000000Z", report.ModifiedBefore)
+	require.Len(t, report.Hits, 1)
+	assert.Equal(t, matching.ID, report.Hits[0].Node.ID)
+
+	_, err = c.SearchEvidence(ctx, "insurance", 10, client.SearchOptions{TagID: "bad"})
+	require.ErrorContains(t, err, "filters are invalid")
+	require.NotContains(t, err.Error(), "bad")
+	_, err = c.SearchEvidence(ctx, "insurance", 10, client.SearchOptions{
+		ModifiedSince: "2100-01-01T00:00:00Z", ModifiedBefore: "2000-01-01T00:00:00Z",
+	})
+	require.ErrorContains(t, err, "filters are invalid")
+	require.NotContains(t, err.Error(), "2100")
+}
+
+func TestSearchEvidenceRejectsMissingFilterAuthority(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.MarshalWrite(w, api.EvidenceSearchReport{
+			Mode: "lexical", Hits: []api.EvidenceSearchHit{}, Limit: 10,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := client.New(server.URL, "key").SearchEvidence(
+		t.Context(), "insurance", 10,
+		client.SearchOptions{TagID: "11111111-1111-4111-8111-111111111111"},
+	)
+	require.ErrorContains(t, err, "inconsistent filter authority")
+}
+
 func TestMoveToPathValidatesRequestBeforeTransport(t *testing.T) {
 	c := client.New("http://127.0.0.1:1", serverKey)
 

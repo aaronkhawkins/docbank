@@ -76,6 +76,62 @@ func TestEvidenceSearchIsExplicitlyLexicalAndCitesNameAuthority(t *testing.T) {
 	assert.Empty(t, report.Hits[0].BlobHash)
 }
 
+func TestEvidenceSearchAcceptsAndEchoesStableFilters(t *testing.T) {
+	ts, s := newTestServer(t, nil)
+	ctx := t.Context()
+	docs, err := s.Mkdir(ctx, s.RootID(), "policies")
+	require.NoError(t, err)
+	tag, err := s.CreateTag(ctx, "renewal")
+	require.NoError(t, err)
+	matching, err := s.CreateFile(ctx, docs.ID, "insurance-renewal.pdf",
+		testHash("evidence-filter-match"), 42, "application/pdf")
+	require.NoError(t, err)
+	_, err = s.CreateFile(ctx, s.RootID(), "insurance-draft.pdf",
+		testHash("evidence-filter-other"), 42, "application/pdf")
+	require.NoError(t, err)
+	_, err = s.AssignTag(ctx, tag.ID, matching.ID, matching.Revision)
+	require.NoError(t, err)
+
+	path := fmt.Sprintf("/api/v1/evidence/search?q=insurance&limit=1&tag_id=%s&"+
+		"mime_type=APPLICATION%%2FPDF&under_node_id=%d&"+
+		"modified_since=2000-01-01T00:00:00-05:00&modified_before=2100-01-01T00:00:00Z",
+		tag.ID, docs.ID)
+	resp, body := get(t, ts, path, nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	var report api.EvidenceSearchReport
+	require.NoError(t, json.Unmarshal([]byte(body), &report))
+	assert.Equal(t, tag.ID, report.TagID)
+	assert.Equal(t, "application/pdf", report.MIMEType)
+	assert.Equal(t, docs.ID, report.UnderNodeID)
+	assert.Equal(t, "2000-01-01T05:00:00.000000000Z", report.ModifiedSince)
+	assert.Equal(t, "2100-01-01T00:00:00.000000000Z", report.ModifiedBefore)
+	require.Len(t, report.Hits, 1)
+	assert.Equal(t, matching.ID, report.Hits[0].Node.ID)
+	assert.Equal(t, "node_name", report.Hits[0].EvidenceKind)
+
+	resp, body = get(t, ts, fmt.Sprintf(
+		"/api/v1/evidence/search?q=insurance&limit=10&under_node_id=%d", matching.ID,
+	), nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, body)
+	assert.Contains(t, body, `"code":"not_dir"`)
+	resp, body = get(t, ts,
+		"/api/v1/evidence/search?q=insurance&limit=10&mime_type=text%2Fplain%3Bcharset%3Dutf-8", nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, body)
+	assert.Contains(t, body, `"code":"validation"`)
+	resp, body = get(t, ts, "/api/v1/evidence/search?q=insurance&limit=10&"+
+		"modified_since=2100-01-01T00:00:00Z&modified_before=2000-01-01T00:00:00Z", nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, body)
+	assert.Contains(t, body, `"code":"validation"`)
+
+	const privateQuery = "PRIVATE-QUERY-CANARY"
+	const missingTag = "99999999-9999-4999-8999-999999999999"
+	resp, body = get(t, ts, "/api/v1/evidence/search?q="+privateQuery+
+		"&limit=10&tag_id="+missingTag, nil)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode, body)
+	assert.NotContains(t, body, privateQuery)
+	assert.NotContains(t, body, missingTag)
+}
+
 func TestDocumentViewerBindsHistoricalVersionAndOCRToNode(t *testing.T) {
 	ts, s := newTestServer(t, nil)
 	node := createFileWithContent(t, ts, s, "/report.pdf", "first edition")

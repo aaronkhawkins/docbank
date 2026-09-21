@@ -97,6 +97,33 @@ func TestOpenAPISearchQueryIsOptional(t *testing.T) {
 	t.Fatal("search q parameter missing")
 }
 
+func TestOpenAPIEvidenceSearchDeclaresStableFilters(t *testing.T) {
+	doc := api.NewOfflineServer().API().OpenAPI()
+	op := doc.Paths["/api/v1/evidence/search"].Get
+	require.NotNil(t, op)
+	assert.Equal(t, "searchLexicalEvidence", op.OperationID)
+	parameters := map[string]*huma.Param{}
+	for _, parameter := range op.Parameters {
+		parameters[parameter.Name] = parameter
+	}
+	require.Contains(t, parameters, "q")
+	assert.True(t, parameters["q"].Required)
+	assert.Equal(t, 1, *parameters["q"].Schema.MinLength)
+	assert.Equal(t, 4096, *parameters["q"].Schema.MaxLength)
+	assert.Equal(t, float64(1), *parameters["limit"].Schema.Minimum)
+	assert.Equal(t, float64(100), *parameters["limit"].Schema.Maximum)
+	for _, name := range []string{
+		"tag_id", "mime_type", "under_node_id", "modified_since", "modified_before",
+	} {
+		assert.Contains(t, parameters, name)
+	}
+	assert.NotEmpty(t, parameters["tag_id"].Schema.Pattern)
+	assert.Equal(t, 255, *parameters["mime_type"].Schema.MaxLength)
+	assert.Equal(t, float64(1), *parameters["under_node_id"].Schema.Minimum)
+	assert.Equal(t, 64, *parameters["modified_since"].Schema.MaxLength)
+	assert.Equal(t, 64, *parameters["modified_before"].Schema.MaxLength)
+}
+
 func TestLongRunningBackupRoutesClearBodyReadDeadline(t *testing.T) {
 	doc := api.NewOfflineServer().API().OpenAPI()
 	for _, operation := range []*huma.Operation{

@@ -338,19 +338,55 @@ func registerReadRoutes(api huma.API, d Deps) {
 		OperationID: "searchLexicalEvidence", Method: http.MethodGet,
 		Path: "/api/v1/evidence/search", Summary: "Search live documents with immutable lexical evidence",
 		Description: "This endpoint is explicitly lexical. Each result identifies either the node name, " +
-			"the original content blob, or an immutable rendition build and segment.",
+			"the original content blob, or an immutable rendition build and segment. An optional stable " +
+			"tag ID, parameter-free MIME type, live directory node ID, and inclusive-since/exclusive-before " +
+			"absolute modification interval narrow the existing ranked result set.",
 	}, func(ctx context.Context, in *struct {
-		Q     string `query:"q" required:"true" minLength:"1" maxLength:"4096"`
-		Limit int    `query:"limit" default:"20" minimum:"1" maximum:"100"`
+		Q              string `query:"q" required:"true" minLength:"1" maxLength:"4096"`
+		Limit          int    `query:"limit" default:"20" minimum:"1" maximum:"100"`
+		TagID          string `query:"tag_id" pattern:"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"`
+		MIMEType       string `query:"mime_type" maxLength:"255"`
+		UnderNodeID    int64  `query:"under_node_id" minimum:"1"`
+		ModifiedSince  string `query:"modified_since" maxLength:"64"`
+		ModifiedBefore string `query:"modified_before" maxLength:"64"`
 	}) (*evidenceSearchOutput, error) {
-		hits, truncated, err := d.Store.SearchExplainedLexicalCandidates(
-			ctx, in.Q, in.Limit, store.SearchOptions{},
+		if strings.TrimSpace(in.Q) == "" {
+			return nil, NewError(http.StatusUnprocessableEntity, "search_query_required",
+				"a lexical search query is required")
+		}
+		mimeType, err := store.NormalizeSearchMIMEType(in.MIMEType)
+		if err != nil {
+			return nil, NewError(http.StatusUnprocessableEntity, "validation",
+				"the search MIME type is invalid")
+		}
+		modifiedSince, modifiedBefore, err := store.NormalizeSearchTimeBounds(
+			in.ModifiedSince, in.ModifiedBefore,
 		)
 		if err != nil {
-			return nil, FromStoreError(err)
+			return nil, NewError(http.StatusUnprocessableEntity, "validation",
+				"the search modification interval is invalid")
+		}
+		hits, truncated, err := d.Store.SearchExplainedLexicalCandidates(
+			ctx, in.Q, in.Limit, store.SearchOptions{
+				TagID: in.TagID, MIMEType: mimeType, UnderNodeID: in.UnderNodeID,
+				ModifiedSince: modifiedSince, ModifiedBefore: modifiedBefore,
+			},
+		)
+		if err != nil {
+			switch {
+			case errors.Is(err, store.ErrNotFound):
+				return nil, NewError(http.StatusNotFound, "not_found", "a search filter target was not found")
+			case errors.Is(err, store.ErrNotDir):
+				return nil, NewError(http.StatusUnprocessableEntity, "not_dir",
+					"the search scope is not a directory")
+			default:
+				return nil, NewError(http.StatusInternalServerError, "internal", "evidence search failed")
+			}
 		}
 		out := &evidenceSearchOutput{Body: EvidenceSearchReport{
 			Mode: "lexical", Hits: []EvidenceSearchHit{}, Limit: in.Limit, Truncated: truncated,
+			TagID: in.TagID, MIMEType: mimeType, UnderNodeID: in.UnderNodeID,
+			ModifiedSince: modifiedSince, ModifiedBefore: modifiedBefore,
 		}}
 		for _, hit := range hits {
 			out.Body.Hits = append(out.Body.Hits, EvidenceSearchHit{
