@@ -152,6 +152,24 @@ func (registry *EmbeddingRuntimeRegistry) Prepare(ctx context.Context, work Embe
 	return execution, err
 }
 
+// ResolveQueryEncoder resolves an exact immutable descriptor without
+// weakening the vector space identity recorded by the store.
+func (registry *EmbeddingRuntimeRegistry) ResolveQueryEncoder(_ context.Context,
+	descriptor document.EmbeddingDescriptor,
+) (document.EmbeddingProvider, error) {
+	if registry == nil {
+		return nil, ErrEmbeddingRuntimeUnavailable
+	}
+	registry.mu.RLock()
+	runtime := registry.runtimes[descriptor.Fingerprint]
+	registry.mu.RUnlock()
+	providerRuntime, ok := runtime.(*ProviderEmbeddingRuntime)
+	if !ok {
+		return nil, ErrEmbeddingRuntimeUnavailable
+	}
+	return providerRuntime.QueryProvider(descriptor)
+}
+
 func (registry *EmbeddingRuntimeRegistry) Classify(err error) (EmbeddingProviderFailure, time.Duration) {
 	// Registry preparation binds classification to the selected execution.
 	// There is no safe cross-runtime classification for an unbound error.
