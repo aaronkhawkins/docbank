@@ -15,7 +15,8 @@ docbank search report --modified-since 2026-01-01T00:00:00Z
 docbank search report --modified-before 2026-04-01T00:00:00Z
 docbank search --modified-since 2026-01-01T00:00:00Z --modified-before 2026-04-01T00:00:00Z
 docbank search --tag taxes
-docbank search report --limit 200
+docbank search report --limit 2 --offset 0
+docbank search report --limit 2 --offset 2
 docbank search report --json
 ```
 
@@ -45,11 +46,12 @@ id:198     content  /taxes/2026/car-insurance-notes.md
   those options narrow an anchored search but don't anchor one. Blank includes
   whitespace-only queries. Results include live files and directories, excluding
   the vault root. The limit bounds the response size, not database work.
-- **Truncation is not pagination.** If `truncated` is true, the page is incomplete.
-  Increasing the limit or narrowing filters may help, but time bounds cannot
-  split results with identical modification timestamps. For example, restoring
-  more than 1,000 nodes together can leave some unreachable through time bounds
-  alone, even at the maximum limit. Search has no continuation cursor.
+- **Offset pagination.** `--offset` is a zero-based position in the final
+  ordered, duplicate-free result stream and defaults to `0`. If `truncated` is
+  true, continue with the exact `next_offset` reported by JSON or by the human
+  output. Name matches still all precede content-only matches, including when a
+  page crosses that boundary. Filter-only pages retain their
+  modification-time-descending, name, and ID order.
 - **Live nodes only.** Trashed documents don't appear; restore returns
   them to the index. Renames update the index immediately.
 - **Current content only.** Retained prior versions stay available through
@@ -77,8 +79,38 @@ id:198     content  /taxes/2026/car-insurance-notes.md
   to UTC and echoed in JSON. The bounds apply to the live node's current
   `modified_at`, not filesystem provenance or the age of retained versions.
 
-For scripts, `--json` returns `hits`, `limit`, and `truncated` without table
-formatting. `hits` is always an array, including when nothing matches.
+For scripts, `--json` returns `hits`, `limit`, `offset`, `next_offset`, and
+`truncated` without table formatting. `hits` is always an array, including
+when nothing matches.
+
+## Pagination across search surfaces
+
+Ordinary HTTP search uses
+`GET /api/v1/search?q=<query>&limit=<n>&offset=<n>`. Evidence-bearing lexical
+search uses `GET /api/v1/evidence/search` with the same parameters; its limit
+range remains 1–100 rather than ordinary search's 1–1000. The Go client accepts
+the offset in `SearchWithOptions` and `SearchEvidence`. The MCP
+`search_documents` tool accepts an optional non-negative `offset`, defaulting
+to `0`, and returns evidence identities and the same pagination metadata.
+
+Every response echoes `offset` and sets `next_offset` to
+`offset + len(hits)`. Follow `next_offset` only while `truncated` is true. For
+example, given three matches and `limit=2`:
+
+```text
+page 1: offset=0  hits=[first, second]  next_offset=2  truncated=true
+page 2: offset=2  hits=[third]          next_offset=3  truncated=false
+```
+
+The second page is complete, so its `next_offset` is informational and must not
+be followed. An exact-end request at `offset=3` (or one beyond the end) returns
+`hits=[]`, echoes the requested offset, uses that same value for `next_offset`,
+and sets `truncated=false`.
+
+Use the same query and filters for every page. This numeric order is
+deterministic while the relevant vault state is unchanged; additions, renames,
+content changes, tag changes, moves, restores, or deletions between requests
+can move results across offsets. Pagination does not create a search snapshot.
 
 ## Text extraction
 

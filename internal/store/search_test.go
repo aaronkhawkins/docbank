@@ -232,7 +232,7 @@ func TestSearchExplainedLexicalCandidatesCitesActiveRenditionSegment(t *testing.
 		ContentVersionID: versions[0], ProcessingProfileFingerprint: profile.Fingerprint,
 		AttachmentID: attachment.ID, PublishedAt: embeddingCatalogTime}, generation.ID))
 
-	candidates, truncated, err := s.SearchExplainedLexicalCandidates(t.Context(), "mercury", 10, SearchOptions{})
+	candidates, truncated, err := s.SearchExplainedLexicalCandidates(t.Context(), "mercury", 10, 0, SearchOptions{})
 	require.NoError(t, err)
 	assert.False(t, truncated)
 	require.Len(t, candidates, 1)
@@ -241,6 +241,70 @@ func TestSearchExplainedLexicalCandidatesCitesActiveRenditionSegment(t *testing.
 	assert.Contains(t, candidates[0].Excerpt, "mercury")
 	assert.LessOrEqual(t, len([]rune(candidates[0].Excerpt)), maxExplainedSearchExcerptRunes)
 	assert.Equal(t, versions[0], candidates[0].Node.CurrentVersionID)
+}
+
+func TestSearchExplainedLexicalCandidatesOffsetsUniqueRenditionDocuments(t *testing.T) {
+	s, versions := newRenditionCatalogFixture(t)
+	profile := catalogProcessingProfile(t, false)
+	build := lexicalSearchBuild(s, profile, catalogBuildID, "mercury first evidence")
+	build.LexicalSegments[0].ID = "lexical_segment_" + strings.Repeat("1", 64)
+	secondText := "mercury second evidence"
+	build.LexicalSegments = append(build.LexicalSegments, RenditionLexicalSegmentRecord{
+		ID: "lexical_segment_" + strings.Repeat("2", 64), UnitID: build.LexicalSegments[0].UnitID,
+		Order: 1, CharStart: build.LexicalSegments[0].CharEnd,
+		CharEnd:  build.LexicalSegments[0].CharEnd + len([]rune(secondText)),
+		Checksum: testSHA256([]byte(secondText)), Text: secondText,
+	})
+	require.NoError(t, s.StageRenditionBuild(t.Context(), build))
+	generation, err := s.StageLexicalGeneration(t.Context(), hashVectorIndexTest("offset-lexical"))
+	require.NoError(t, err)
+	attachment := RenditionAttachmentRecord{ID: catalogAttachmentFirst, VaultID: s.VaultID(),
+		ContentVersionID: versions[0], BuildID: build.ID, Profile: profile,
+		AttachedAt: embeddingCatalogTime}
+	require.NoError(t, s.PublishRenditionAndLexicalHeads(t.Context(), attachment, RenditionHeadRecord{
+		ContentVersionID: versions[0], ProcessingProfileFingerprint: profile.Fingerprint,
+		AttachmentID: attachment.ID, PublishedAt: embeddingCatalogTime}, generation.ID))
+	secondProfile := catalogProcessingProfile(t, true)
+	secondAttachment := RenditionAttachmentRecord{
+		ID: catalogAttachmentSecond, VaultID: s.VaultID(), ContentVersionID: versions[1],
+		BuildID: build.ID, Profile: secondProfile, AttachedAt: embeddingCatalogTime,
+	}
+	require.NoError(t, s.PublishRenditionAndLexicalHeads(t.Context(), secondAttachment, RenditionHeadRecord{
+		ContentVersionID: versions[1], ProcessingProfileFingerprint: secondProfile.Fingerprint,
+		AttachmentID: secondAttachment.ID, PublishedAt: embeddingCatalogTime}, generation.ID))
+
+	candidates, truncated, err := s.SearchExplainedLexicalCandidates(
+		t.Context(), "mercury", 1, 0, SearchOptions{},
+	)
+	require.NoError(t, err)
+	assert.True(t, truncated, "the second document, not its second segment, continues the page")
+	require.Len(t, candidates, 1)
+	assert.Equal(t, versions[0], candidates[0].Node.CurrentVersionID)
+	assert.Equal(t, build.LexicalSegments[0].ID, candidates[0].SegmentID)
+	assert.Equal(t, build.ID, candidates[0].BuildID)
+	assert.Contains(t, candidates[0].Excerpt, "mercury")
+	assert.LessOrEqual(t, len([]rune(candidates[0].Excerpt)), maxExplainedSearchExcerptRunes)
+
+	candidates, truncated, err = s.SearchExplainedLexicalCandidates(
+		t.Context(), "mercury", 1, 1, SearchOptions{},
+	)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, versions[1], candidates[0].Node.CurrentVersionID)
+	assert.Equal(t, build.LexicalSegments[0].ID, candidates[0].SegmentID)
+	assert.False(t, truncated)
+
+	candidates, truncated, err = s.SearchExplainedLexicalCandidates(
+		t.Context(), "mercury", 1, 2, SearchOptions{},
+	)
+	require.NoError(t, err)
+	assert.Empty(t, candidates)
+	assert.False(t, truncated)
+
+	_, _, err = s.SearchExplainedLexicalCandidates(
+		t.Context(), "mercury", 1, -1, SearchOptions{},
+	)
+	require.ErrorContains(t, err, "offset must not be negative")
 }
 
 func TestRenditionTextReturnsBoundedImmutableSegments(t *testing.T) {
@@ -275,7 +339,7 @@ func TestSearchExplainedLexicalCandidatesIncludesNamePath(t *testing.T) {
 	_, err = s.CreateFile(t.Context(), docs.ID, "alpha.pdf", fakeHash("alpha"), 1, "application/pdf")
 	require.NoError(t, err)
 
-	candidates, truncated, err := s.SearchExplainedLexicalCandidates(t.Context(), "alpha", 10, SearchOptions{})
+	candidates, truncated, err := s.SearchExplainedLexicalCandidates(t.Context(), "alpha", 10, 0, SearchOptions{})
 
 	require.NoError(t, err)
 	assert.False(t, truncated)
@@ -428,7 +492,7 @@ func TestSearchPageFiltersNameAndContentMatchesByTag(t *testing.T) {
 	}))
 
 	hits, truncated, err := s.SearchPageWithOptions(
-		ctx, "quarterly", 10, SearchOptions{TagID: tag.ID},
+		ctx, "quarterly", 10, 0, SearchOptions{TagID: tag.ID},
 	)
 	require.NoError(t, err)
 	require.Len(t, hits, 2)
@@ -441,13 +505,13 @@ func TestSearchPageFiltersNameAndContentMatchesByTag(t *testing.T) {
 	assert.NotEqual(t, untagged.ID, hits[1].Node.ID)
 
 	hits, truncated, err = s.SearchPageWithOptions(
-		ctx, "quarterly", 1, SearchOptions{TagID: tag.ID},
+		ctx, "quarterly", 1, 0, SearchOptions{TagID: tag.ID},
 	)
 	require.NoError(t, err)
 	assert.Len(t, hits, 1)
 	assert.True(t, truncated)
 
-	_, _, err = s.SearchPageWithOptions(ctx, "quarterly", 10, SearchOptions{
+	_, _, err = s.SearchPageWithOptions(ctx, "quarterly", 10, 0, SearchOptions{
 		TagID: "11111111-1111-4111-8111-111111111111",
 	})
 	require.ErrorIs(t, err, ErrNotFound)
@@ -486,7 +550,7 @@ func TestSearchPageFiltersCurrentMediaTypeWithParameters(t *testing.T) {
 	}))
 
 	hits, truncated, err := s.SearchPageWithOptions(
-		ctx, "quarterly", 10, SearchOptions{MIMEType: "TEXT/PLAIN"},
+		ctx, "quarterly", 10, 0, SearchOptions{MIMEType: "TEXT/PLAIN"},
 	)
 	require.NoError(t, err)
 	assert.False(t, truncated)
@@ -496,7 +560,7 @@ func TestSearchPageFiltersCurrentMediaTypeWithParameters(t *testing.T) {
 	assert.Equal(t, contentMatch.ID, hits[2].Node.ID)
 	assert.Equal(t, SearchMatchContent, hits[2].Match)
 
-	hits, _, err = s.SearchPageWithOptions(ctx, "quarterly", 10, SearchOptions{
+	hits, _, err = s.SearchPageWithOptions(ctx, "quarterly", 10, 0, SearchOptions{
 		TagID: tag.ID, MIMEType: "text/plain",
 	})
 	require.NoError(t, err)
@@ -505,15 +569,15 @@ func TestSearchPageFiltersCurrentMediaTypeWithParameters(t *testing.T) {
 	assert.Equal(t, contentMatch.ID, hits[1].Node.ID)
 
 	_, _, err = s.SearchPageWithOptions(
-		ctx, "quarterly", 10, SearchOptions{MIMEType: "text/plain; charset=utf-8"},
+		ctx, "quarterly", 10, 0, SearchOptions{MIMEType: "text/plain; charset=utf-8"},
 	)
 	require.ErrorContains(t, err, "must not include parameters")
 	_, _, err = s.SearchPageWithOptions(
-		ctx, "quarterly", 10, SearchOptions{MIMEType: "not a media type"},
+		ctx, "quarterly", 10, 0, SearchOptions{MIMEType: "not a media type"},
 	)
 	require.ErrorContains(t, err, "is invalid")
 	_, _, err = s.SearchPageWithOptions(
-		ctx, "quarterly", 10, SearchOptions{MIMEType: "text/*"},
+		ctx, "quarterly", 10, 0, SearchOptions{MIMEType: "text/*"},
 	)
 	require.ErrorContains(t, err, "must not contain wildcards")
 }
@@ -545,7 +609,7 @@ func TestSearchPageFiltersDescendantsByStableDirectory(t *testing.T) {
 	require.NoError(t, err)
 
 	hits, truncated, err := s.SearchPageWithOptions(
-		ctx, "quarterly", 10, SearchOptions{UnderNodeID: scope.ID},
+		ctx, "quarterly", 10, 0, SearchOptions{UnderNodeID: scope.ID},
 	)
 	require.NoError(t, err)
 	assert.False(t, truncated)
@@ -556,7 +620,7 @@ func TestSearchPageFiltersDescendantsByStableDirectory(t *testing.T) {
 		assert.NotEqual(t, scope.ID, hit.Node.ID, "the selected directory is not its own descendant")
 	}
 
-	hits, _, err = s.SearchPageWithOptions(ctx, "quarterly", 10, SearchOptions{
+	hits, _, err = s.SearchPageWithOptions(ctx, "quarterly", 10, 0, SearchOptions{
 		TagID: tag.ID, MIMEType: "application/pdf", UnderNodeID: scope.ID,
 	})
 	require.NoError(t, err)
@@ -564,7 +628,7 @@ func TestSearchPageFiltersDescendantsByStableDirectory(t *testing.T) {
 	assert.Equal(t, insidePDF.ID, hits[0].Node.ID)
 
 	_, _, err = s.SearchPageWithOptions(
-		ctx, "quarterly", 10, SearchOptions{UnderNodeID: insidePDF.ID},
+		ctx, "quarterly", 10, 0, SearchOptions{UnderNodeID: insidePDF.ID},
 	)
 	require.ErrorIs(t, err, ErrNotDir)
 	trashed, err := s.Mkdir(ctx, s.RootID(), "old-quarterly")
@@ -572,7 +636,7 @@ func TestSearchPageFiltersDescendantsByStableDirectory(t *testing.T) {
 	_, _, err = s.Trash(ctx, trashed.ID, trashed.Revision)
 	require.NoError(t, err)
 	_, _, err = s.SearchPageWithOptions(
-		ctx, "quarterly", 10, SearchOptions{UnderNodeID: trashed.ID},
+		ctx, "quarterly", 10, 0, SearchOptions{UnderNodeID: trashed.ID},
 	)
 	require.ErrorIs(t, err, ErrNotFound)
 }
@@ -610,7 +674,7 @@ func TestSearchPageFiltersByModificationTime(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	hits, truncated, err := s.SearchPageWithOptions(ctx, "quarterly", 10, SearchOptions{
+	hits, truncated, err := s.SearchPageWithOptions(ctx, "quarterly", 10, 0, SearchOptions{
 		ModifiedSince:  "2026-01-01T19:00:00-05:00",
 		ModifiedBefore: "2026-01-03T00:00:00Z",
 	})
@@ -656,14 +720,14 @@ func TestSearchPageAllowsOnlyBoundedQuerylessFilters(t *testing.T) {
 		_, err = s.db.ExecContext(ctx, `UPDATE nodes SET modified_at=? WHERE id=?`, stamp, id)
 		require.NoError(t, err)
 	}
-	hits, truncated, err := s.SearchPageWithOptions(ctx, "", 10, SearchOptions{TagID: tag.ID})
+	hits, truncated, err := s.SearchPageWithOptions(ctx, "", 10, 0, SearchOptions{TagID: tag.ID})
 	require.NoError(t, err)
 	require.False(t, truncated)
 	require.Len(t, hits, 1)
 	assert.Equal(t, newer.ID, hits[0].Node.ID)
 	assert.Equal(t, SearchMatchFilter, hits[0].Match)
 
-	hits, truncated, err = s.SearchPageWithOptions(ctx, " ", 1, SearchOptions{
+	hits, truncated, err = s.SearchPageWithOptions(ctx, " ", 1, 0, SearchOptions{
 		ModifiedSince: "2026-01-01T00:00:00Z", ModifiedBefore: "2026-01-04T00:00:00Z",
 	})
 	require.NoError(t, err)
@@ -675,12 +739,12 @@ func TestSearchPageAllowsOnlyBoundedQuerylessFilters(t *testing.T) {
 	for _, opts := range []SearchOptions{
 		{}, {MIMEType: "text/plain"}, {UnderNodeID: s.RootID()},
 	} {
-		_, _, err = s.SearchPageWithOptions(ctx, "", 10, opts)
+		_, _, err = s.SearchPageWithOptions(ctx, "", 10, 0, opts)
 		require.ErrorIs(t, err, ErrSearchQueryRequired)
 	}
-	_, _, err = s.SearchPageWithOptions(ctx, "", 10, SearchOptions{MIMEType: "not a media type"})
+	_, _, err = s.SearchPageWithOptions(ctx, "", 10, 0, SearchOptions{MIMEType: "not a media type"})
 	require.ErrorContains(t, err, "is invalid")
-	_, _, err = s.SearchPageWithOptions(ctx, "", 10, SearchOptions{ModifiedSince: "yesterday"})
+	_, _, err = s.SearchPageWithOptions(ctx, "", 10, 0, SearchOptions{ModifiedSince: "yesterday"})
 	require.ErrorContains(t, err, "absolute RFC3339 timestamp")
 }
 
@@ -711,7 +775,7 @@ func TestSearchFilterPagePathsAndTies(t *testing.T) {
 	require.NoError(t, err)
 
 	opts := SearchOptions{TagID: tag.ID, ModifiedSince: "2026-01-01T00:00:00Z"}
-	hits, truncated, err := s.SearchPageWithOptions(ctx, "", 2, opts)
+	hits, truncated, err := s.SearchPageWithOptions(ctx, "", 2, 0, opts)
 	require.NoError(t, err)
 	require.Len(t, hits, 2)
 	assert.True(t, truncated)
@@ -720,7 +784,7 @@ func TestSearchFilterPagePathsAndTies(t *testing.T) {
 	assert.Equal(t, first.ID, hits[1].Node.ID)
 	assert.Equal(t, "/docs/same.txt", hits[1].Path)
 
-	hits, truncated, err = s.SearchPageWithOptions(ctx, "", 3, opts)
+	hits, truncated, err = s.SearchPageWithOptions(ctx, "", 3, 0, opts)
 	require.NoError(t, err)
 	require.Len(t, hits, 3)
 	assert.False(t, truncated)
@@ -729,7 +793,7 @@ func TestSearchFilterPagePathsAndTies(t *testing.T) {
 
 	opts.UnderNodeID = nested.ID
 	opts.MIMEType = "text/plain"
-	hits, truncated, err = s.SearchPageWithOptions(ctx, "", 3, opts)
+	hits, truncated, err = s.SearchPageWithOptions(ctx, "", 3, 0, opts)
 	require.NoError(t, err)
 	require.Len(t, hits, 1)
 	assert.False(t, truncated)
@@ -795,6 +859,121 @@ func TestSearchContentFollowsStableNameMatches(t *testing.T) {
 	assert.Equal(t, nameMatch.ID, hits[0].Node.ID)
 }
 
+func TestSearchPageWithOptionsOffsetsFinalUniqueRankedStream(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	var names []Node
+	for index, name := range []string{"needle-a.txt", "needle-b.txt"} {
+		node, err := s.CreateFile(ctx, s.RootID(), name, fakeHash(fmt.Sprintf("a1%d", index)), 1, "text/plain")
+		require.NoError(t, err)
+		names = append(names, node)
+	}
+	var content []Node
+	for index, name := range []string{"body-a.txt", "body-b.txt"} {
+		node, err := s.CreateFile(ctx, s.RootID(), name, fakeHash(fmt.Sprintf("c1%d", index)), 1, "text/plain")
+		require.NoError(t, err)
+		require.NoError(t, s.RecordExtraction(ctx, ExtractionResult{
+			BlobHash: node.BlobHash, Extractor: "plain-text", ExtractorVersion: 1,
+			Status: ExtractionOK, Text: "needle body",
+		}))
+		content = append(content, node)
+	}
+	// This document matches both lanes. It must remain in the name partition
+	// and be excluded from content even after the offset skips every name hit.
+	require.NoError(t, s.RecordExtraction(ctx, ExtractionResult{
+		BlobHash: names[0].BlobHash, Extractor: "plain-text", ExtractorVersion: 1,
+		Status: ExtractionOK, Text: "needle duplicate lane",
+	}))
+
+	assertPage := func(offset, limit int, wantIDs []int64, wantMatches []string, wantTruncated bool) {
+		t.Helper()
+		hits, truncated, err := s.SearchPageWithOptions(ctx, "needle", limit, offset, SearchOptions{})
+		require.NoError(t, err)
+		assert.Equal(t, wantTruncated, truncated)
+		gotIDs := make([]int64, len(hits))
+		gotMatches := make([]string, len(hits))
+		for index, hit := range hits {
+			gotIDs[index], gotMatches[index] = hit.Node.ID, hit.Match
+		}
+		assert.Equal(t, wantIDs, gotIDs)
+		assert.Equal(t, wantMatches, gotMatches)
+	}
+
+	assertPage(0, 1, []int64{names[0].ID}, []string{SearchMatchName}, true)
+	assertPage(1, 2, []int64{names[1].ID, content[0].ID},
+		[]string{SearchMatchName, SearchMatchContent}, true)
+	assertPage(2, 2, []int64{content[0].ID, content[1].ID},
+		[]string{SearchMatchContent, SearchMatchContent}, false)
+	assertPage(3, 2, []int64{content[1].ID}, []string{SearchMatchContent}, false)
+	assertPage(4, 2, []int64{}, []string{}, false)
+	assertPage(9, 2, []int64{}, []string{}, false)
+
+	evidence, truncated, err := s.SearchExplainedLexicalCandidates(
+		ctx, "needle", 2, 1, SearchOptions{},
+	)
+	require.NoError(t, err)
+	require.Len(t, evidence, 2)
+	assert.True(t, truncated)
+	assert.Equal(t, names[1].ID, evidence[0].Node.ID)
+	assert.Equal(t, "node_name", evidence[0].EvidenceKind)
+	assert.Equal(t, content[0].ID, evidence[1].Node.ID)
+	assert.Equal(t, "content_blob", evidence[1].EvidenceKind)
+	assert.Equal(t, content[0].BlobHash, evidence[1].BlobHash)
+	evidence, truncated, err = s.SearchExplainedLexicalCandidates(
+		ctx, "needle", 2, 4, SearchOptions{},
+	)
+	require.NoError(t, err)
+	assert.Empty(t, evidence)
+	assert.False(t, truncated)
+
+	_, _, err = s.SearchPageWithOptions(ctx, "needle", 2, -1, SearchOptions{})
+	require.ErrorContains(t, err, "offset must not be negative")
+}
+
+func TestSearchPageWithOptionsOffsetsFilterOnlyOrderAndFilters(t *testing.T) {
+	s := newTestStore(t)
+	ctx := t.Context()
+	tag, err := s.CreateTag(ctx, "offset-filter")
+	require.NoError(t, err)
+	directory, err := s.Mkdir(ctx, s.RootID(), "offset-scope")
+	require.NoError(t, err)
+	var files []Node
+	for index, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		node, err := s.CreateFile(ctx, directory.ID, name, fakeHash(fmt.Sprintf("f1%d", index)), 1, "text/plain; charset=utf-8")
+		require.NoError(t, err)
+		_, err = s.AssignTag(ctx, tag.ID, node.ID, node.Revision)
+		require.NoError(t, err)
+		files = append(files, node)
+	}
+	outside, err := s.CreateFile(ctx, s.RootID(), "outside.txt", fakeHash("f20"), 1, "text/plain")
+	require.NoError(t, err)
+	_, err = s.AssignTag(ctx, tag.ID, outside.ID, outside.Revision)
+	require.NoError(t, err)
+	_, err = s.db.ExecContext(ctx, `UPDATE nodes SET modified_at=?`, "2026-01-02T00:00:00.000000000Z")
+	require.NoError(t, err)
+	opts := SearchOptions{TagID: tag.ID, MIMEType: "text/plain", UnderNodeID: directory.ID,
+		ModifiedSince: "2026-01-01T00:00:00Z", ModifiedBefore: "2026-01-03T00:00:00Z"}
+
+	hits, truncated, err := s.SearchPageWithOptions(ctx, "", 1, 1, opts)
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	assert.Equal(t, files[1].ID, hits[0].Node.ID)
+	assert.Equal(t, "/offset-scope/b.txt", hits[0].Path)
+	assert.Equal(t, SearchMatchFilter, hits[0].Match)
+	assert.True(t, truncated)
+
+	hits, truncated, err = s.SearchPageWithOptions(ctx, "", 2, 2, opts)
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	assert.Equal(t, files[2].ID, hits[0].Node.ID)
+	assert.False(t, truncated)
+
+	hits, truncated, err = s.SearchPageWithOptions(ctx, "", 2, 3, opts)
+	require.NoError(t, err)
+	assert.Empty(t, hits)
+	assert.False(t, truncated)
+}
+
 func TestSearchAttachmentEligibilityKeepsSharedBuildVersionScoped(t *testing.T) {
 	// Mutation caught: joining lexical rows to content by source hash or build
 	// alone would let one attachment confer search visibility on another version.
@@ -833,7 +1012,7 @@ func TestSearchAttachmentEligibilityKeepsSharedBuildVersionScoped(t *testing.T) 
 		ContentVersionID: versions[1], ProcessingProfileFingerprint: secondProfile.Fingerprint,
 		AttachmentID: second.ID, PublishedAt: "2026-08-22T10:03:00.000000000Z",
 	}, generation.ID))
-	hits, _, err = s.SearchPageWithOptions(ctx, "mercury", 10, SearchOptions{MIMEType: "application/pdf"})
+	hits, _, err = s.SearchPageWithOptions(ctx, "mercury", 10, 0, SearchOptions{MIMEType: "application/pdf"})
 	require.NoError(t, err)
 	require.Len(t, hits, 2, "independently headed attachments may share one vault-local build")
 	assert.Equal(t, "synthetic-source-a.pdf", hits[0].Node.Name)

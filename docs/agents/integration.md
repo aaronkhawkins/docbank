@@ -211,11 +211,15 @@ subtree filter can narrow that page but cannot anchor an empty query by itself;
 a blank or whitespace-only query without a tag or time bound returns
 `422 search_query_required`. Results include live files and directories, but
 exclude the vault root. The limit bounds response size, not database work.
-Always inspect `truncated`: a true value means the page is incomplete.
-Increasing `limit` or narrowing filters may help, but time bounds cannot split
-nodes with identical modification timestamps, such as a restored subtree.
-Search has no continuation cursor and cannot guarantee complete enumeration
-of a time window.
+Always inspect `truncated`: when it is true, request the next page with the
+response's exact `next_offset`, keeping the same query and filters. Stop when
+`truncated` is false; `next_offset` on that terminal page is informational.
+The offset is a position in the final duplicate-free result stream, including
+across the name/content boundary. Pagination is deterministic while the
+relevant vault state is unchanged, but it does not create a snapshot: changes
+between requests can move results across offsets. Evidence search at
+`/api/v1/evidence/search` and the MCP `search_documents` tool use the same
+`offset`/`next_offset` contract.
 
 ```bash
 curl --fail-with-body --get \
@@ -227,6 +231,7 @@ curl --fail-with-body --get \
   --data-urlencode 'modified_since=2026-01-01T00:00:00Z' \
   --data-urlencode 'modified_before=2026-04-01T00:00:00Z' \
   --data 'limit=100' \
+  --data 'offset=0' \
   "$DOCBANK_URL/api/v1/search"
 ```
 
