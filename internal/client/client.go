@@ -324,17 +324,22 @@ func (c *Client) do(ctx context.Context, method, path string, hdr map[string]str
 func (c *Client) doWithHeaders(
 	ctx context.Context, method, path string, hdr map[string]string, in, out any,
 ) (http.Header, error) {
+	diagnosticTarget := path
+	if queryStart := strings.IndexByte(diagnosticTarget, '?'); queryStart >= 0 {
+		diagnosticTarget = diagnosticTarget[:queryStart]
+	}
 	var body io.Reader
 	if in != nil {
 		b, err := marshalJSONRequest(in)
 		if err != nil {
-			return nil, fmt.Errorf("encoding %s %s request: %w", method, path, err)
+			return nil, fmt.Errorf("encoding %s %s request: %w", method, diagnosticTarget, err)
 		}
 		body = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
 	if err != nil {
-		return nil, fmt.Errorf("building %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("building %s %s: %w", method, diagnosticTarget,
+			redactRequestURL(err, diagnosticTarget))
 	}
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -348,7 +353,8 @@ func (c *Client) doWithHeaders(
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		return nil, &transportError{err: fmt.Errorf(
-			"calling daemon (%s %s): %w", method, path, err,
+			"calling daemon (%s %s): %w", method, diagnosticTarget,
+			redactRequestURL(err, diagnosticTarget),
 		)}
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -361,10 +367,20 @@ func (c *Client) doWithHeaders(
 	}
 	if err := json.UnmarshalRead(resp.Body, out); err != nil {
 		return nil, &responseDecodeError{err: fmt.Errorf(
-			"decoding %s %s response: %w", method, path, err,
+			"decoding %s %s response: %w", method, diagnosticTarget, err,
 		)}
 	}
 	return resp.Header.Clone(), nil
+}
+
+func redactRequestURL(err error, diagnosticTarget string) error {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return err
+	}
+	redacted := *urlErr
+	redacted.URL = diagnosticTarget
+	return &redacted
 }
 
 // marshalJSONRequest is the shared JSON v2 boundary for typed request bodies,
@@ -438,6 +454,60 @@ func (c *Client) ChildrenPage(
 		(len(page.Items) == 0 && offset < page.Total) ||
 		(len(page.Items) > 0 && offset+len(page.Items) > page.Total) {
 		return api.NodePage{}, errors.New("children response has inconsistent pagination")
+	}
+	return page, nil
+}
+
+// Documents returns one bounded canonical-path-ordered recursive file page.
+// A root request omits both vaultID and underNodeID. A directory request must
+// supply both so a previously resolved scope fails closed in another vault.
+func (c *Client) Documents(
+	ctx context.Context, vaultID string, underNodeID int64, limit, offset int,
+) (api.DocumentPage, error) {
+	var page api.DocumentPage
+	if !validVaultDirectoryScope(vaultID, underNodeID) {
+		return page, errors.New("document scope vault ID and node ID must be supplied together")
+	}
+	if vaultID != "" && !validUUIDv4(vaultID) {
+		return page, errors.New("document scope vault ID must be a canonical UUIDv4")
+	}
+	if underNodeID < 0 {
+		return page, errors.New("document scope node ID must be positive")
+	}
+	if limit < 1 || limit > 5000 {
+		return page, errors.New("document page limit must be between 1 and 5000")
+	}
+	if offset < 0 {
+		return page, errors.New("document page offset must not be negative")
+	}
+	query := url.Values{}
+	query.Set("limit", strconv.Itoa(limit))
+	query.Set("offset", strconv.Itoa(offset))
+	if vaultID != "" {
+		query.Set("vault_id", vaultID)
+	}
+	if underNodeID != 0 {
+		query.Set("under_node_id", strconv.FormatInt(underNodeID, 10))
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/documents?"+query.Encode(), nil, nil, &page); err != nil {
+		return api.DocumentPage{}, err
+	}
+	if !validUUIDv4(page.VaultID) || (vaultID != "" && page.VaultID != vaultID) ||
+		page.UnderNodeID < 1 || page.Directory.ID != page.UnderNodeID ||
+		page.Directory.Kind != "dir" || page.Directory.TrashedAt != "" ||
+		!strings.HasPrefix(page.Directory.Path, "/") || page.Total < 0 ||
+		page.Limit != limit || page.Offset != offset || len(page.Items) > limit ||
+		page.NextOffset != offset+len(page.Items) ||
+		page.Truncated != (page.NextOffset < page.Total) ||
+		(len(page.Items) == 0 && offset < page.Total) ||
+		(len(page.Items) > 0 && offset+len(page.Items) > page.Total) {
+		return api.DocumentPage{}, errors.New("document response has inconsistent pagination authority")
+	}
+	for _, item := range page.Items {
+		if item.ID < 1 || item.Kind != "file" || item.TrashedAt != "" ||
+			!validUUIDv4(item.CurrentVersionID) || !strings.HasPrefix(item.Path, "/") {
+			return api.DocumentPage{}, errors.New("document response has invalid item authority")
+		}
 	}
 	return page, nil
 }
@@ -856,27 +926,95 @@ func (c *Client) Search(ctx context.Context, query string, limit int) (api.Searc
 func (c *Client) SearchEvidence(
 	ctx context.Context, query string, limit, offset int,
 ) (api.EvidenceSearchReport, error) {
+	return c.SearchEvidenceWithOptions(ctx, query, limit, EvidenceSearchOptions{Offset: offset})
+}
+
+// EvidenceSearchOptions binds an optional directory scope to one vault.
+type EvidenceSearchOptions struct {
+	VaultID        string
+	UnderNodeID    int64
+	Offset         int
+	TagID          string
+	MIMEType       string
+	ModifiedSince  string
+	ModifiedBefore string
+}
+
+// SearchEvidenceWithOptions returns lexical evidence, optionally restricted
+// to descendants of one stable directory identity in one vault.
+func (c *Client) SearchEvidenceWithOptions(
+	ctx context.Context, query string, limit int, opts EvidenceSearchOptions,
+) (api.EvidenceSearchReport, error) {
 	var report api.EvidenceSearchReport
-	if strings.TrimSpace(query) == "" {
-		return report, errors.New("evidence search query must not be empty")
+	if strings.TrimSpace(query) == "" || utf8.RuneCountInString(query) > 4096 {
+		return report, errors.New("evidence search query must be between 1 and 4096 characters")
 	}
 	if limit < 1 || limit > 100 {
 		return report, errors.New("evidence search limit must be between 1 and 100")
 	}
-	if offset < 0 {
+	if !validVaultDirectoryScope(opts.VaultID, opts.UnderNodeID) {
+		return report, errors.New("evidence search vault ID and node ID must be supplied together")
+	}
+	if opts.VaultID != "" && !validUUIDv4(opts.VaultID) {
+		return report, errors.New("evidence search vault ID must be a canonical UUIDv4")
+	}
+	if opts.UnderNodeID < 0 {
+		return report, errors.New("evidence search directory node ID must be positive")
+	}
+	if opts.Offset < 0 {
 		return report, errors.New("evidence search offset must not be negative")
 	}
-	path := "/api/v1/evidence/search?q=" + url.QueryEscape(query) + "&limit=" + strconv.Itoa(limit) +
-		"&offset=" + strconv.Itoa(offset)
+	if opts.TagID != "" && !validUUIDv4(opts.TagID) {
+		return report, errors.New("evidence search filters are invalid")
+	}
+	mimeType, err := store.NormalizeSearchMIMEType(opts.MIMEType)
+	if err != nil {
+		return report, errors.New("evidence search filters are invalid")
+	}
+	modifiedSince, modifiedBefore, err := store.NormalizeSearchTimeBounds(
+		opts.ModifiedSince, opts.ModifiedBefore,
+	)
+	if err != nil {
+		return report, errors.New("evidence search filters are invalid")
+	}
+	queryValues := url.Values{}
+	queryValues.Set("q", query)
+	queryValues.Set("limit", strconv.Itoa(limit))
+	queryValues.Set("offset", strconv.Itoa(opts.Offset))
+	if opts.VaultID != "" {
+		queryValues.Set("vault_id", opts.VaultID)
+	}
+	if opts.UnderNodeID != 0 {
+		queryValues.Set("under_node_id", strconv.FormatInt(opts.UnderNodeID, 10))
+	}
+	if opts.TagID != "" {
+		queryValues.Set("tag_id", opts.TagID)
+	}
+	if mimeType != "" {
+		queryValues.Set("mime_type", mimeType)
+	}
+	if modifiedSince != "" {
+		queryValues.Set("modified_since", modifiedSince)
+	}
+	if modifiedBefore != "" {
+		queryValues.Set("modified_before", modifiedBefore)
+	}
+	path := "/api/v1/evidence/search?" + queryValues.Encode()
 	if err := c.do(ctx, http.MethodGet, path, nil, nil, &report); err != nil {
 		return api.EvidenceSearchReport{}, err
 	}
-	if report.Mode != "lexical" {
+	if report.Mode != "lexical" || !validUUIDv4(report.VaultID) ||
+		(opts.VaultID != "" && report.VaultID != opts.VaultID) ||
+		report.UnderNodeID != opts.UnderNodeID || report.Limit != limit || len(report.Hits) > limit {
 		return api.EvidenceSearchReport{}, errors.New("evidence search response has inconsistent authority")
 	}
-	if !validSearchPagination(limit, offset, report.Limit, report.Offset, report.NextOffset,
+	if !validSearchPagination(limit, opts.Offset, report.Limit, report.Offset, report.NextOffset,
 		len(report.Hits), report.Truncated) {
 		return api.EvidenceSearchReport{}, errors.New("evidence search response has inconsistent pagination authority")
+	}
+	if report.TagID != opts.TagID || report.MIMEType != mimeType ||
+		report.ModifiedSince != modifiedSince || report.ModifiedBefore != modifiedBefore {
+		return api.EvidenceSearchReport{}, errors.New("evidence search response has inconsistent filter authority")
 	}
 	for _, hit := range report.Hits {
 		if hit.Node.ID < 1 || !validUUIDv4(hit.Node.CurrentVersionID) ||
@@ -903,6 +1041,10 @@ func (c *Client) SearchEvidence(
 		}
 	}
 	return report, nil
+}
+
+func validVaultDirectoryScope(vaultID string, underNodeID int64) bool {
+	return (vaultID == "") == (underNodeID == 0)
 }
 
 // RenditionText returns one bounded page of normalized text from an immutable

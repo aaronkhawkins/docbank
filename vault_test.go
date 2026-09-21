@@ -95,6 +95,40 @@ func TestVaultCreateIsImmutableAndIdempotent(t *testing.T) {
 	require.Equal(created.Computed.SHA256, after.BlobHash)
 }
 
+func TestVaultDocumentsPagesCurrentRecursiveFiles(t *testing.T) {
+	vault, err := New(t.Context(), Config{Root: t.TempDir()})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, vault.Close()) })
+
+	one, err := vault.Create(t.Context(), "/finance/one.txt", strings.NewReader("one"),
+		CreateOptions{MediaType: "text/plain", Expected: contentIdentity([]byte("one"))})
+	require.NoError(t, err)
+	_, err = vault.Create(t.Context(), "/finance/archive/two.txt", strings.NewReader("two"),
+		CreateOptions{MediaType: "text/plain", Expected: contentIdentity([]byte("two"))})
+	require.NoError(t, err)
+	finance, err := vault.Stat(t.Context(), "/finance")
+	require.NoError(t, err)
+
+	page, err := vault.Documents(t.Context(), finance.ID, DocumentOptions{Limit: 1})
+	require.NoError(t, err)
+	assert.Equal(t, finance.ID, page.Directory.ID)
+	assert.Equal(t, "/finance", page.Directory.Path)
+	assert.Equal(t, 2, page.Total)
+	assert.Equal(t, 1, page.Limit)
+	assert.Equal(t, 1, page.NextOffset)
+	assert.True(t, page.Truncated)
+	require.Len(t, page.Items, 1)
+	assert.Equal(t, "/finance/archive/two.txt", page.Items[0].Path)
+
+	second, err := vault.Documents(t.Context(), finance.ID, DocumentOptions{Limit: 1, Offset: 1})
+	require.NoError(t, err)
+	require.Len(t, second.Items, 1)
+	assert.Equal(t, 2, second.NextOffset)
+	assert.False(t, second.Truncated)
+	assert.Equal(t, one.Node.ID, second.Items[0].ID)
+	assert.Equal(t, one.Version.ID, second.Items[0].CurrentVersionID)
+}
+
 func TestVaultSourceMetadataReturnsExactVersionEvidence(t *testing.T) {
 	vault, err := New(t.Context(), Config{Root: t.TempDir()})
 	require.NoError(t, err)

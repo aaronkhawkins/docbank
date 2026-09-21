@@ -712,6 +712,28 @@ The daemon indexes current UTF-8 `text/*`, JSON, and JSONL blobs up to 16 MiB
 after a terminally verified read. PDF, Office, and OCR extraction are
 unsupported. See [Searching](usage/searching.md).
 
+## docbank list-documents
+
+```
+docbank list-documents [<path-or-id>] [--limit <n>] [--offset <n>] [--json]
+```
+
+Lists current live files recursively from the vault root, or below one live
+directory selected by absolute path or stable `id:N`. Results are ordered by
+canonical path and then stable node ID. The default limit is 500; `--limit`
+accepts 1–5000 and `--offset` continues an offset page. Human output includes
+stable node and current-version identities, size, media type, and canonical
+path, and names the next offset when more documents remain. JSON includes
+`next_offset` and `truncated`; continue with `next_offset` only while
+`truncated` is true. It also includes the vault-qualified scope, resolved
+directory, total, and page coordinates.
+
+This command is recursive inventory. `docbank ls` shows immediate children;
+`docbank search` performs lexical name and extracted-text matching. `*` and
+path fragments are not search wildcards here. Because each page reflects the
+current tree, restart at offset zero after concurrent moves, trash, restore,
+or imports.
+
 ## docbank tui
 
 ```

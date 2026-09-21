@@ -1247,6 +1247,31 @@ func TestSearchCLI(t *testing.T) {
 	require.ErrorContains(t, err, "--mode")
 }
 
+func TestListDocumentsCLIRecursesWithoutChangingLS(t *testing.T) {
+	setupVaultHome(t)
+	src := writeSourceFile(t, "report.txt", "report")
+	_, err := runCLI(t, "add", src, "--dest", "/finance/archive")
+	require.NoError(t, err)
+
+	out, err := runCLI(t, "list-documents", "/finance", "--limit", "1", "--json")
+	require.NoError(t, err, out)
+	var page api.DocumentPage
+	require.NoError(t, json.Unmarshal([]byte(out), &page))
+	assert.Equal(t, "/finance", page.Directory.Path)
+	assert.Equal(t, 1, page.Total)
+	assert.Equal(t, 1, page.NextOffset)
+	assert.False(t, page.Truncated)
+	require.Len(t, page.Items, 1)
+	assert.Equal(t, "/finance/archive/report.txt", page.Items[0].Path)
+
+	out, err = runCLI(t, "ls", "/finance", "--json")
+	require.NoError(t, err, out)
+	var listing directoryListing
+	require.NoError(t, json.Unmarshal([]byte(out), &listing))
+	require.Len(t, listing.Items, 1)
+	assert.Equal(t, "dir", listing.Items[0].Kind)
+}
+
 func TestSearchCLIReportsTruncation(t *testing.T) {
 	setupVaultHome(t)
 	srcA := writeSourceFile(t, "report-a.txt", "alpha")

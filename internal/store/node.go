@@ -50,6 +50,14 @@ type DirectoryPageView struct {
 	Total     int
 }
 
+// DocumentPageView binds a live directory and one recursive file page to the
+// same read snapshot. Documents are ordered by canonical path, then node ID.
+type DocumentPageView struct {
+	Directory NodeView
+	Documents []WalkEntry
+	Total     int
+}
+
 const nodeFrom = `nodes AS n
 	LEFT JOIN content_versions AS cv
 		ON cv.node_id = n.id AND cv.version_id = n.current_version_id`
@@ -332,6 +340,97 @@ func (s *Store) DirectoryChildrenPage(
 		return DirectoryPageView{}, fmt.Errorf("closing directory snapshot: %w", err)
 	}
 	return DirectoryPageView{Directory: view, Children: children, Total: total}, nil
+}
+
+// DocumentPage returns one bounded page of live file descendants beneath a
+// live directory. A zero directory ID selects the vault root.
+func (s *Store) DocumentPage(
+	ctx context.Context, dirID int64, limit, offset int,
+) (DocumentPageView, error) {
+	if limit < 1 || limit > 5000 {
+		return DocumentPageView{}, errors.New("document page limit must be between 1 and 5000")
+	}
+	if offset < 0 {
+		return DocumentPageView{}, errors.New("document page offset must not be negative")
+	}
+	if dirID == 0 {
+		dirID = s.rootID
+	}
+
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return DocumentPageView{}, fmt.Errorf("starting document snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	dir, err := nodeByIDTx(tx, dirID)
+	if err != nil {
+		return DocumentPageView{}, err
+	}
+	if dir.TrashedAt != nil {
+		return DocumentPageView{}, fmt.Errorf("node %d: %w", dirID, ErrNotFound)
+	}
+	if !dir.IsDir() {
+		return DocumentPageView{}, fmt.Errorf("node %d: %w", dirID, ErrNotDir)
+	}
+	view, err := nodeViewForNode(ctx, tx, dir)
+	if err != nil {
+		return DocumentPageView{}, err
+	}
+
+	const treeCTE = `WITH RECURSIVE tree(id, path) AS (
+		SELECT ?, ?
+		UNION ALL
+		SELECT child.id,
+		       CASE WHEN tree.path = '/' THEN '/' || child.name
+		            ELSE tree.path || '/' || child.name END
+		FROM nodes child JOIN tree ON child.parent_id = tree.id
+		WHERE child.trashed_at IS NULL
+	)`
+	var total int
+	if err := tx.QueryRowContext(ctx, treeCTE+`
+		SELECT COUNT(*) FROM tree
+		JOIN nodes n ON n.id = tree.id
+		WHERE n.kind = 'file'`, dir.ID, view.Path).Scan(&total); err != nil {
+		return DocumentPageView{}, fmt.Errorf("counting documents under %d: %w", dirID, err)
+	}
+	rows, err := tx.QueryContext(ctx, treeCTE+`
+		SELECT tree.path, `+nodeCols+`
+		FROM tree
+		JOIN nodes AS n ON n.id = tree.id
+		LEFT JOIN content_versions AS cv
+			ON cv.node_id = n.id AND cv.version_id = n.current_version_id
+		WHERE n.kind = 'file'
+		ORDER BY tree.path COLLATE BINARY, n.id
+		LIMIT ? OFFSET ?`, dir.ID, view.Path, limit, offset)
+	if err != nil {
+		return DocumentPageView{}, fmt.Errorf("listing documents under %d: %w", dirID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	pageCapacity := min(limit, max(total-offset, 0))
+	documents := make([]WalkEntry, 0, pageCapacity)
+	for rows.Next() {
+		var entry WalkEntry
+		if err := rows.Scan(&entry.Path, &entry.Node.ID, &entry.Node.ParentID,
+			&entry.Node.Name, &entry.Node.Kind, &entry.Node.CurrentVersionID,
+			&entry.Node.BlobHash, &entry.Node.MD5, &entry.Node.Size, &entry.Node.MimeType,
+			&entry.Node.Revision, &entry.Node.CreatedAt, &entry.Node.ModifiedAt,
+			&entry.Node.TrashedAt); err != nil {
+			return DocumentPageView{}, fmt.Errorf("scanning documents under %d: %w", dirID, err)
+		}
+		documents = append(documents, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return DocumentPageView{}, fmt.Errorf("listing documents under %d: %w", dirID, err)
+	}
+	if err := rows.Close(); err != nil {
+		return DocumentPageView{}, fmt.Errorf("closing documents under %d: %w", dirID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return DocumentPageView{}, fmt.Errorf("closing document snapshot: %w", err)
+	}
+	return DocumentPageView{Directory: view, Documents: documents, Total: total}, nil
 }
 
 // Path returns the display path of a node ("/" for the root).

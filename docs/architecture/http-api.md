@@ -29,6 +29,7 @@ Endpoints are filesystem-shaped, under `/api/v1`:
 | `GET /nodes/{id}` | stat by id (live or trashed) | Implemented |
 | `GET /path?path=/a/b` | stat by virtual path | Implemented |
 | `GET /nodes/{id}/children` | list a directory, paginated (`limit`/`offset`) | Implemented |
+| `GET /documents?vault_id=&under_node_id=&limit=&offset=` | inventory current live files recursively at root or below one live directory, in canonical-path order | Implemented |
 | `GET /nodes/{id}/content` | stream document bytes with catalog identity and a computed digest trailer | Implemented |
 | `PUT /nodes/{id}/content` | replace raw content under revision, size, and digest preconditions — see [addendum](#addendum-put-nodesidcontent) | Implemented |
 | `POST /nodes/{id}/revert` | create a new head from a prior version of the same file | Implemented |
@@ -45,6 +46,7 @@ Endpoints are filesystem-shaped, under `/api/v1`:
 | `POST /audit/verify` | independently replay audit authority, optionally prove recorded evidence is an exact prefix, and re-hash every protected blob | Implemented |
 | `POST /nodes/{id}/verify` | re-hash one file, bound to an inspected node revision | Implemented |
 | `GET /search?q=&tag_id=&mime_type=&under_node_id=&modified_since=&modified_before=&limit=` | bounded name and extracted-content search (FTS5), optionally restricted by stable tag identity, current base media type, descendants of a live directory, and current node modification time, with match source and explicit `truncated` status | Implemented |
+| `GET /evidence/search?q=&vault_id=&under_node_id=&limit=` | bounded lexical document search with immutable evidence identities, optionally restricted by vault-qualified directory scope | Implemented |
 | `POST /nodes` · `POST /path/mkdir` | create a directory beneath a stable parent ID or at one exact virtual coordinate | Implemented |
 | `POST /ingest` · `POST /ingest/stream` · `POST /ingest/preflight` | import with JSON or streamed progress / inventory server-side paths — see [addendum](#addendum-post-ingest-post-ingeststream-and-post-ingestpreflight) | Implemented |
 | `POST /uploads?parent_id=&name=` | stream one digest-checked remote file — see [addendum](#addendum-post-uploads) | Implemented |
@@ -106,6 +108,18 @@ continuation pages to the active build selected by the first response.
 current canonical path—and the requested child page to one read transaction.
 Refresh clients therefore do not combine an earlier directory name with a
 later child listing.
+
+`GET /documents` is the bounded recursive inventory surface. With no scope it
+starts at the vault root; `under_node_id` selects one live directory and
+must be paired with `vault_id` to bind that previously resolved node identity
+to this vault. Supplying only one member of the pair returns `invalid_scope`.
+Responses echo both values, the resolved directory, total count, and an
+offset page of current file nodes with canonical paths and current version
+identity. `next_offset` is `offset + len(items)`; callers continue only while
+`truncated` is true. Ordering is canonical path, then stable node ID. Pages describe the
+tree at request time, so clients should restart at offset zero after moves,
+renames, trash, restore, or concurrent imports. This is browsing, not search:
+there is no query syntax, globbing, or extracted-text matching.
 
 IDs are canonical everywhere: every response carries them, and mutating
 endpoints address nodes by ID so a rename can't strand a concurrent
@@ -627,5 +641,7 @@ machine-readable string clients branch on instead of parsing `detail`:
   authenticated API requests. The master API key never enters the browser.
 - No multi-user model: one vault and one master authority. Browser sessions are
   attenuated local capabilities, not accounts. Sharing is out of scope for v1.
-- No MCP server.
+- No general-purpose or mutating MCP surface. The read-only MCP server exposes
+  bounded document discovery, evidence search, metadata, versions, provenance,
+  content-reference lookup, and rendition text reads.
 - No remote-daemon mode or `[remote]` configuration.

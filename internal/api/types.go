@@ -48,6 +48,19 @@ type NodePage struct {
 	Offset    int    `json:"offset"`
 }
 
+// DocumentPage is one bounded recursive listing of current live files.
+type DocumentPage struct {
+	VaultID     string `json:"vault_id" format:"uuid"`
+	UnderNodeID int64  `json:"under_node_id" minimum:"1"`
+	Directory   Node   `json:"directory"`
+	Items       []Node `json:"items"`
+	Total       int    `json:"total"`
+	Limit       int    `json:"limit"`
+	Offset      int    `json:"offset"`
+	NextOffset  int    `json:"next_offset" minimum:"0"`
+	Truncated   bool   `json:"truncated"`
+}
+
 // TrashPage is one newest-first page of independently restorable trash roots.
 type TrashPage struct {
 	Items  []Node `json:"items"`
@@ -605,12 +618,18 @@ type EvidenceSearchHit struct {
 
 // EvidenceSearchReport is one bounded, explicitly lexical result page.
 type EvidenceSearchReport struct {
-	Mode       string              `json:"mode" enum:"lexical"`
-	Hits       []EvidenceSearchHit `json:"hits"`
-	Limit      int                 `json:"limit" minimum:"1" maximum:"100"`
-	Offset     int                 `json:"offset" minimum:"0"`
-	NextOffset int                 `json:"next_offset" minimum:"0"`
-	Truncated  bool                `json:"truncated"`
+	Mode           string              `json:"mode" enum:"lexical"`
+	VaultID        string              `json:"vault_id" pattern:"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"`
+	UnderNodeID    int64               `json:"under_node_id,omitzero" minimum:"1"`
+	Hits           []EvidenceSearchHit `json:"hits"`
+	Limit          int                 `json:"limit" minimum:"1" maximum:"100"`
+	Offset         int                 `json:"offset" minimum:"0"`
+	NextOffset     int                 `json:"next_offset" minimum:"0"`
+	Truncated      bool                `json:"truncated"`
+	TagID          string              `json:"tag_id,omitzero"`
+	MIMEType       string              `json:"mime_type,omitzero"`
+	ModifiedSince  string              `json:"modified_since,omitzero"`
+	ModifiedBefore string              `json:"modified_before,omitzero"`
 }
 
 // RenditionTextSegment is one immutable, addressable lexical evidence span.

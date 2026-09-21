@@ -26,10 +26,6 @@ func searchResultMatch(result retrieval.Result) string {
 	return store.SearchMatchContent
 }
 
-func validVaultDirectoryScope(vaultID string, underNodeID int64) bool {
-	return (vaultID == "" && underNodeID == 0) || (vaultID != "" && underNodeID > 0)
-}
-
 func searchResultMatchesNode(result retrieval.Result, node store.Node, vaultID string) bool {
 	if node.TrashedAt != nil || result.Document.VaultID != vaultID ||
 		result.Document.NodeID != node.ID || result.Document.ContentVersionID != node.CurrentVersionID {

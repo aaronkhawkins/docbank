@@ -14,7 +14,8 @@ instead use the [embedded API](../embedding.md).
 
 Use the CLI for human-directed shell work and simple orchestration. Use HTTP
 for structured agent workflows, pagination, machine-readable errors, and
-revision-aware mutations.
+revision-aware mutations. Use Docbank's MCP server for bounded read-only agent
+discovery and evidence retrieval.
 
 For simple shell orchestration, CLI exit codes distinguish invalid usage (`2`),
 missing vault objects (`3`), stale state (`4`), busy resources (`5`), and
@@ -176,6 +177,32 @@ curl --fail-with-body \
   -H "X-Api-Key: $DOCBANK_API_KEY" \
   "$DOCBANK_URL/api/v1/nodes/1/children?limit=500&offset=0"
 ```
+
+For recursive file inventory, use `GET /api/v1/documents`. With no scope it
+starts at root. For a directory, first resolve its absolute path with
+`GET /api/v1/path`, then send both the selected vault's `vault_id` and the
+directory's stable `under_node_id`. Every page echoes `offset` and reports
+`next_offset = offset + len(items)`. Continue with `next_offset` only while
+`truncated` is true; restart after concurrent moves, trash, restore, or imports.
+The pair is all-or-none: omit both for root, and supply both for a directory.
+
+The MCP workflow exposes the same distinction as three concrete calls:
+
+```json
+{"name":"list_documents","arguments":{"limit":20,"offset":0}}
+{"name":"resolve_directory","arguments":{"path":"/finance"}}
+{"name":"list_documents","arguments":{"vault_id":"<resolved-vault-id>","under_node_id":42,"limit":20,"offset":0}}
+```
+
+`list_documents` inventories; it does not interpret `*`, paths, or query text.
+For lexical matching below that directory, carry the same resolved scope:
+
+```json
+{"name":"search_documents","arguments":{"query":"quarterly","vault_id":"<resolved-vault-id>","under_node_id":42,"limit":20}}
+```
+
+The MCP process remains bound to its startup vault. A mismatched vault ID,
+missing or trashed node, or file used as directory scope fails closed.
 
 Search is bounded separately. Always inspect `truncated`; increase the limit
 or refine the query rather than assuming the returned array is complete.
