@@ -97,6 +97,15 @@ func TestDocumentInventoryPagesRootAndDirectory(t *testing.T) {
 		finance.ID), nil)
 	assert.Equal(t, http.StatusConflict, resp.StatusCode, body)
 	assert.Contains(t, body, `"code":"vault_mismatch"`)
+
+	for _, invalidScope := range []string{
+		fmt.Sprintf("under_node_id=%d", finance.ID),
+		"vault_id=" + s.VaultID(),
+	} {
+		resp, body = get(t, ts, "/api/v1/documents?limit=10&"+invalidScope, nil)
+		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, body)
+		assert.Contains(t, body, `"code":"invalid_scope"`)
+	}
 }
 
 func TestEvidenceSearchIsExplicitlyLexicalAndCitesNameAuthority(t *testing.T) {
@@ -131,6 +140,15 @@ func TestEvidenceSearchIsExplicitlyLexicalAndCitesNameAuthority(t *testing.T) {
 		docs.ID), nil)
 	assert.Equal(t, http.StatusConflict, resp.StatusCode, body)
 	assert.Contains(t, body, `"code":"vault_mismatch"`)
+
+	for _, invalidScope := range []string{
+		fmt.Sprintf("under_node_id=%d", docs.ID),
+		"vault_id=" + s.VaultID(),
+	} {
+		resp, body = get(t, ts, "/api/v1/evidence/search?q=registration&limit=5&"+invalidScope, nil)
+		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, body)
+		assert.Contains(t, body, `"code":"invalid_scope"`)
+	}
 }
 
 func TestDocumentViewerBindsHistoricalVersionAndOCRToNode(t *testing.T) {

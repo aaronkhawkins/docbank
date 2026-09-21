@@ -183,6 +183,7 @@ starts at root. For a directory, first resolve its absolute path with
 `GET /api/v1/path`, then send both the selected vault's `vault_id` and the
 directory's stable `under_node_id`. Continue through `total` with `limit` and
 `offset`; restart after concurrent moves, trash, restore, or imports.
+The pair is all-or-none: omit both for root, and supply both for a directory.
 
 The MCP workflow exposes the same distinction as three concrete calls:
 

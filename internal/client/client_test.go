@@ -155,6 +155,10 @@ func TestDocumentsReturnsRecursivePageWithVaultAuthority(t *testing.T) {
 	require.ErrorContains(t, err, "canonical UUIDv4")
 	_, err = c.Documents(t.Context(), s.VaultID(), directory.ID, 0, 0)
 	require.ErrorContains(t, err, "between 1 and 5000")
+	_, err = c.Documents(t.Context(), "", directory.ID, 20, 0)
+	require.ErrorContains(t, err, "must be supplied together")
+	_, err = c.Documents(t.Context(), s.VaultID(), 0, 20, 0)
+	require.ErrorContains(t, err, "must be supplied together")
 }
 
 func TestSearchEvidenceScopesByVaultAndDirectory(t *testing.T) {
@@ -179,6 +183,12 @@ func TestSearchEvidenceScopesByVaultAndDirectory(t *testing.T) {
 	_, err = c.SearchEvidenceWithOptions(t.Context(), "quarterly", 20,
 		client.EvidenceSearchOptions{VaultID: "bad", UnderNodeID: directory.ID})
 	require.ErrorContains(t, err, "canonical UUIDv4")
+	_, err = c.SearchEvidenceWithOptions(t.Context(), "quarterly", 20,
+		client.EvidenceSearchOptions{UnderNodeID: directory.ID})
+	require.ErrorContains(t, err, "must be supplied together")
+	_, err = c.SearchEvidenceWithOptions(t.Context(), "quarterly", 20,
+		client.EvidenceSearchOptions{VaultID: s.VaultID()})
+	require.ErrorContains(t, err, "must be supplied together")
 }
 
 func TestProvenanceReturnsStableOriginAuthority(t *testing.T) {

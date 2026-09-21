@@ -443,12 +443,15 @@ func (c *Client) ChildrenPage(
 }
 
 // Documents returns one bounded canonical-path-ordered recursive file page.
-// vaultID may be empty for a connection-local request; supplying it makes a
-// previously resolved scope fail closed if the client targets another vault.
+// A root request omits both vaultID and underNodeID. A directory request must
+// supply both so a previously resolved scope fails closed in another vault.
 func (c *Client) Documents(
 	ctx context.Context, vaultID string, underNodeID int64, limit, offset int,
 ) (api.DocumentPage, error) {
 	var page api.DocumentPage
+	if !validVaultDirectoryScope(vaultID, underNodeID) {
+		return page, errors.New("document scope vault ID and node ID must be supplied together")
+	}
 	if vaultID != "" && !validUUIDv4(vaultID) {
 		return page, errors.New("document scope vault ID must be a canonical UUIDv4")
 	}
@@ -903,6 +906,9 @@ func (c *Client) SearchEvidenceWithOptions(
 	if limit < 1 || limit > 100 {
 		return report, errors.New("evidence search limit must be between 1 and 100")
 	}
+	if !validVaultDirectoryScope(opts.VaultID, opts.UnderNodeID) {
+		return report, errors.New("evidence search vault ID and node ID must be supplied together")
+	}
 	if opts.VaultID != "" && !validUUIDv4(opts.VaultID) {
 		return report, errors.New("evidence search vault ID must be a canonical UUIDv4")
 	}
@@ -952,6 +958,10 @@ func (c *Client) SearchEvidenceWithOptions(
 		}
 	}
 	return report, nil
+}
+
+func validVaultDirectoryScope(vaultID string, underNodeID int64) bool {
+	return (vaultID == "") == (underNodeID == 0)
 }
 
 // RenditionText returns one bounded page of normalized text from an immutable

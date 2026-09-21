@@ -321,6 +321,10 @@ func registerReadRoutes(api huma.API, d Deps) {
 		Limit       int    `query:"limit" default:"500" minimum:"1" maximum:"5000"`
 		Offset      int    `query:"offset" default:"0" minimum:"0"`
 	}) (*documentsPage, error) {
+		if !validVaultDirectoryScope(in.VaultID, in.UnderNodeID) {
+			return nil, NewError(http.StatusUnprocessableEntity, "invalid_scope",
+				"vault_id and under_node_id must be supplied together")
+		}
 		if in.VaultID != "" && in.VaultID != d.Store.VaultID() {
 			return nil, NewError(http.StatusConflict, "vault_mismatch",
 				"document scope belongs to a different vault")
@@ -381,6 +385,10 @@ func registerReadRoutes(api huma.API, d Deps) {
 		UnderNodeID int64  `query:"under_node_id" minimum:"1"`
 		Limit       int    `query:"limit" default:"20" minimum:"1" maximum:"100"`
 	}) (*evidenceSearchOutput, error) {
+		if !validVaultDirectoryScope(in.VaultID, in.UnderNodeID) {
+			return nil, NewError(http.StatusUnprocessableEntity, "invalid_scope",
+				"vault_id and under_node_id must be supplied together")
+		}
 		if in.VaultID != "" && in.VaultID != d.Store.VaultID() {
 			return nil, NewError(http.StatusConflict, "vault_mismatch",
 				"search scope belongs to a different vault")
@@ -555,4 +563,8 @@ func registerReadRoutes(api huma.API, d Deps) {
 		}
 		return out, nil
 	})
+}
+
+func validVaultDirectoryScope(vaultID string, underNodeID int64) bool {
+	return (vaultID == "") == (underNodeID == 0)
 }

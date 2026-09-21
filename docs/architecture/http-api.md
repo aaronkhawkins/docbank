@@ -111,7 +111,8 @@ later child listing.
 
 `GET /documents` is the bounded recursive inventory surface. With no scope it
 starts at the vault root; `under_node_id` selects one live directory and
-`vault_id` can bind that previously resolved node identity to this vault.
+must be paired with `vault_id` to bind that previously resolved node identity
+to this vault. Supplying only one member of the pair returns `invalid_scope`.
 Responses echo both values, the resolved directory, total count, and an
 offset page of current file nodes with canonical paths and current version
 identity. Ordering is canonical path, then stable node ID. Pages describe the
