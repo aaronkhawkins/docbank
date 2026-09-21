@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"text/tabwriter"
@@ -18,6 +19,7 @@ const (
 
 var (
 	searchLimit  int
+	searchOffset int
 	searchJSON   bool
 	searchTag    string
 	searchMIME   string
@@ -32,6 +34,9 @@ var searchCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if searchLimit < 1 || searchLimit > maxSearchLimit {
 			return usageError(fmt.Errorf("--limit must be between 1 and %d", maxSearchLimit))
+		}
+		if searchOffset < 0 {
+			return usageError(errors.New("--offset must not be negative"))
 		}
 		mimeType, err := store.NormalizeSearchMIMEType(searchMIME)
 		if err != nil {
@@ -84,7 +89,7 @@ var searchCmd = &cobra.Command{
 			underPath = directory.Path
 		}
 		rep, err := c.SearchWithOptions(
-			cmd.Context(), strings.Join(args, " "), searchLimit, 0, opts,
+			cmd.Context(), strings.Join(args, " "), searchLimit, searchOffset, opts,
 		)
 		if err != nil {
 			return err
@@ -127,13 +132,8 @@ var searchCmd = &cobra.Command{
 			return fmt.Errorf("writing search results: %w", err)
 		}
 		if rep.Truncated {
-			noun := "results"
-			if rep.Limit == 1 {
-				noun = "result"
-			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-				"more than %d %s; showing the first %d (increase --limit to see more)\n",
-				rep.Limit, noun, rep.Limit)
+				"more results available; use --offset %d to continue\n", rep.NextOffset)
 		}
 		return nil
 	},
@@ -142,6 +142,8 @@ var searchCmd = &cobra.Command{
 func init() {
 	searchCmd.Flags().IntVar(&searchLimit, "limit", defaultSearchLimit,
 		"maximum results to return (1-1000)")
+	searchCmd.Flags().IntVar(&searchOffset, "offset", 0,
+		"number of ordered results to skip")
 	searchCmd.Flags().StringVar(&searchTag, "tag", "",
 		"require one tag by name or stable ID")
 	searchCmd.Flags().StringVar(&searchMIME, "mime-type", "",

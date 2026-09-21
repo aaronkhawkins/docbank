@@ -23,8 +23,9 @@ func NewServer(factory ClientFactory) *sdkmcp.Server {
 	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "docbank", Version: version.Version}, nil)
 
 	type searchInput struct {
-		Query string `json:"query" jsonschema:"Lexical query (1-4096 characters)."`
-		Limit int    `json:"limit,omitempty" jsonschema:"Maximum results (1-100, default 20)."`
+		Query  string `json:"query" jsonschema:"Lexical query (1-4096 characters)."`
+		Limit  int    `json:"limit,omitempty" jsonschema:"Maximum results (1-100, default 20)."`
+		Offset int    `json:"offset,omitempty" jsonschema:"Zero-based result offset."`
 	}
 	sdkmcp.AddTool(server, &sdkmcp.Tool{Name: "search_documents",
 		Description: "Search live documents lexically and return stable evidence identities and bounded excerpts."},
@@ -33,11 +34,11 @@ func NewServer(factory ClientFactory) *sdkmcp.Server {
 				in.Limit = 20
 			}
 			if strings.TrimSpace(in.Query) == "" || utf8.RuneCountInString(in.Query) > 4096 ||
-				in.Limit < 1 || in.Limit > 100 {
+				in.Limit < 1 || in.Limit > 100 || in.Offset < 0 {
 				return invalidToolCall[api.EvidenceSearchReport]()
 			}
 			return daemonCall(ctx, factory, func(c *client.Client) (api.EvidenceSearchReport, error) {
-				return c.SearchEvidence(ctx, in.Query, in.Limit, 0)
+				return c.SearchEvidence(ctx, in.Query, in.Limit, in.Offset)
 			})
 		})
 

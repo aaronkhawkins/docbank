@@ -60,6 +60,10 @@ func TestRunProcessDistinguishesUsageAndMissingNodes(t *testing.T) {
 	assert.Equal(t, exitUsage, code)
 	assert.Contains(t, stderr.String(), "--limit must be between")
 
+	code = run("search", "term", "--offset", "-1")
+	assert.Equal(t, exitUsage, code)
+	assert.Contains(t, stderr.String(), "--offset must not be negative")
+
 	code = run("search")
 	assert.Equal(t, exitUsage, code)
 	assert.Contains(t, stderr.String(), "search query is required")

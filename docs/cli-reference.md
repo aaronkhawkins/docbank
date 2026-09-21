@@ -646,17 +646,18 @@ returns the complete restored node with its resulting path and revision.
 ## docbank search
 
 ```
-docbank search [<query>...] [--tag <name-or-id>] [--mime-type <type/subtype>] [--under <path-or-id>] [--modified-since <timestamp>] [--modified-before <timestamp>] [--limit <n>] [--json]
+docbank search [<query>...] [--tag <name-or-id>] [--mime-type <type/subtype>] [--under <path-or-id>] [--modified-since <timestamp>] [--modified-before <timestamp>] [--limit <n>] [--offset <n>] [--json]
 ```
 
 Full-text search over live node names and verified extracted text (FTS5).
 Every whitespace-separated term is matched as a prefix; FTS operator syntax
 in the query is escaped, not interpreted. Name matches retain their existing
 BM25 order and appear before content-only matches, whose ranking is independent.
-The default limit is 50 and `--limit` accepts 1–1000. When more matches exist,
-the command says that the result is truncated rather than silently implying
-completeness. Output columns are `SELECTOR`, `MATCH`, and `PATH`; no matches prints
-`no matches`.
+The default limit is 50 and `--limit` accepts 1–1000. `--offset` is a
+non-negative position in the final ordered result stream and defaults to zero.
+When more matches exist, the command prints the exact next offset to pass to
+`--offset`. Output columns are `SELECTOR`, `MATCH`, and `PATH`; no matches
+prints `no matches`.
 
 `--tag` requires one current tag assignment. It accepts a tag's exact name or
 stable UUID using the same selector rules as `docbank tag show`; the CLI
@@ -682,15 +683,19 @@ ordered newest-first by current modification time and show `filter` in the
 filter page, but neither is an anchor by itself, so a blank search with only
 one of those options is rejected. Blank includes whitespace-only queries.
 Results include live files and directories, excluding the vault root. The
-limit bounds response size, not database work. Search has no continuation
-cursor: when `truncated` is true, narrowing time bounds cannot recover omitted
-nodes that share a timestamp with returned nodes, such as a restored subtree.
+limit bounds response size, not database work. Continue with `next_offset` only
+while `truncated` is true and keep the query and filters unchanged. The order is
+deterministic while the relevant vault state is unchanged; mutations between
+page requests can move results because offset pagination does not create a
+snapshot.
 
-`--json` emits the typed search report with `hits`, the applied `limit`, and
-an explicit `truncated` boolean. A filtered report also echoes the stable
-`tag_id`, normalized `mime_type`, stable `under_node_id`, and canonical
-`modified_since` / `modified_before` bounds when supplied. An empty result uses
-`"hits": []`.
+`--json` emits the typed search report with `hits`, the applied `limit`, echoed
+`offset`, `next_offset`, and an explicit `truncated` boolean. `next_offset` is
+always `offset + len(hits)`. A filtered report also echoes the stable `tag_id`,
+normalized `mime_type`, stable `under_node_id`, and canonical `modified_since`
+/ `modified_before` bounds when supplied. An exact-end or beyond-end request
+returns `"hits": []`, echoes the requested offset as `next_offset`, and sets
+`truncated` to false.
 
 The daemon indexes current UTF-8 `text/*`, JSON, and JSONL blobs up to 16 MiB
 after a terminally verified read. PDF, Office, and OCR extraction are

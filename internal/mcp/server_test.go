@@ -18,9 +18,14 @@ func TestServerAdvertisesOnlyReadToolsAndCallsDaemon(t *testing.T) {
 		assert.Equal(t, "/api/v1/evidence/search", r.URL.Path)
 		assert.Equal(t, "synthetic registration", r.URL.Query().Get("q"))
 		assert.Equal(t, "3", r.URL.Query().Get("limit"))
-		assert.Equal(t, "0", r.URL.Query().Get("offset"))
+		offset := r.URL.Query().Get("offset")
+		assert.Contains(t, []string{"0", "7"}, offset)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"mode":"lexical","hits":[{"node":{"id":7,"name":"fixture.pdf","kind":"file","current_version_id":"11111111-1111-4111-8111-111111111111","blob_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":42,"revision":1,"created_at":"2026-01-01T00:00:00Z","modified_at":"2026-01-01T00:00:00Z"},"path":"/fixture.pdf","match":"content","evidence_kind":"rendition_segment","build_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","segment_id":"segment-1","excerpt":"synthetic registration"}],"limit":3,"offset":0,"next_offset":1,"truncated":false}`))
+		if offset == "0" {
+			_, _ = w.Write([]byte(`{"mode":"lexical","hits":[{"node":{"id":7,"name":"fixture.pdf","kind":"file","current_version_id":"11111111-1111-4111-8111-111111111111","blob_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":42,"revision":1,"created_at":"2026-01-01T00:00:00Z","modified_at":"2026-01-01T00:00:00Z"},"path":"/fixture.pdf","match":"content","evidence_kind":"rendition_segment","build_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","segment_id":"segment-1","excerpt":"synthetic registration"}],"limit":3,"offset":0,"next_offset":1,"truncated":false}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"mode":"lexical","hits":[{"node":{"id":7,"name":"fixture.pdf","kind":"file","current_version_id":"11111111-1111-4111-8111-111111111111","blob_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":42,"revision":1,"created_at":"2026-01-01T00:00:00Z","modified_at":"2026-01-01T00:00:00Z"},"path":"/fixture.pdf","match":"content","evidence_kind":"rendition_segment","build_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","segment_id":"segment-1","excerpt":"synthetic registration"}],"limit":3,"offset":7,"next_offset":8,"truncated":false}`))
 	}))
 	defer daemon.Close()
 
@@ -47,7 +52,7 @@ func TestServerAdvertisesOnlyReadToolsAndCallsDaemon(t *testing.T) {
 		"list_document_versions", "read_rendition_text", "search_documents"}, names)
 
 	result, err := clientSession.CallTool(t.Context(), &sdkmcp.CallToolParams{Name: "search_documents",
-		Arguments: map[string]any{"query": "synthetic registration", "limit": 3}})
+		Arguments: map[string]any{"query": "synthetic registration", "limit": 3, "offset": 7}})
 	require.NoError(t, err)
 	assert.False(t, result.IsError)
 	require.Len(t, result.Content, 1)
@@ -55,4 +60,25 @@ func TestServerAdvertisesOnlyReadToolsAndCallsDaemon(t *testing.T) {
 	require.True(t, ok)
 	assert.Contains(t, text.Text, `"mode":"lexical"`)
 	assert.Contains(t, text.Text, `"build_id":"bbbbbbbb`)
+	assert.Contains(t, text.Text, `"offset":7`)
+	assert.Contains(t, text.Text, `"next_offset":8`)
+
+	result, err = clientSession.CallTool(t.Context(), &sdkmcp.CallToolParams{Name: "search_documents",
+		Arguments: map[string]any{"query": "synthetic registration", "limit": 3}})
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	require.Len(t, result.Content, 1)
+	text, ok = result.Content[0].(*sdkmcp.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, text.Text, `"offset":0`)
+	assert.Contains(t, text.Text, `"next_offset":1`)
+
+	result, err = clientSession.CallTool(t.Context(), &sdkmcp.CallToolParams{Name: "search_documents",
+		Arguments: map[string]any{"query": "synthetic registration", "limit": 3, "offset": -1}})
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	require.Len(t, result.Content, 1)
+	text, ok = result.Content[0].(*sdkmcp.TextContent)
+	require.True(t, ok)
+	assert.Equal(t, "Invalid Docbank tool arguments", text.Text)
 }
