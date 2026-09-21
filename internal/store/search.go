@@ -65,15 +65,6 @@ func (s *Store) SearchExplainedLexicalCandidates(ctx context.Context, query stri
 		return nil, false, nil
 	}
 	filterSQL, filterArgs := searchFilterSQL(opts)
-	countArgs := append([]any{fq}, filterArgs...)
-	var nameCount int
-	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+nodeFrom+`
-		WHERE n.id IN (SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH ?)
-		  AND n.kind='file' AND cv.version_id IS NOT NULL AND n.trashed_at IS NULL `+filterSQL,
-		countArgs...).Scan(&nameCount)
-	if err != nil {
-		return nil, false, fmt.Errorf("counting name evidence for %q: %w", query, err)
-	}
 	nameArgs := append([]any{fq}, filterArgs...)
 	nameArgs = append(nameArgs, fq, limit+1, offset)
 	rows, err := s.db.QueryContext(ctx, `SELECT `+nodeCols+` FROM `+nodeFrom+`
@@ -97,6 +88,17 @@ func (s *Store) SearchExplainedLexicalCandidates(ctx context.Context, query stri
 	}
 	if err := s.addSearchPaths(ctx, nameHits); err != nil {
 		return nil, false, err
+	}
+	nameCount := offset + len(nameHits)
+	if offset > 0 && len(nameHits) == 0 {
+		countArgs := append([]any{fq}, filterArgs...)
+		err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+nodeFrom+`
+			WHERE n.id IN (SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH ?)
+			  AND n.kind='file' AND cv.version_id IS NOT NULL AND n.trashed_at IS NULL `+filterSQL,
+			countArgs...).Scan(&nameCount)
+		if err != nil {
+			return nil, false, fmt.Errorf("counting name evidence for %q: %w", query, err)
+		}
 	}
 	remaining := limit + 1 - len(nameHits)
 	contentOffset := max(0, offset-nameCount)
@@ -1633,14 +1635,6 @@ func (s *Store) SearchPageWithOptions(
 		return s.searchFilterPage(ctx, limit, offset, opts)
 	}
 	filterSQL, filterArgs := searchFilterSQL(opts)
-	countArgs := append([]any{fq}, filterArgs...)
-	var nameCount int
-	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+nodeFrom+`
-		WHERE n.id IN (SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH ?)
-		  AND n.trashed_at IS NULL `+filterSQL, countArgs...).Scan(&nameCount)
-	if err != nil {
-		return nil, false, fmt.Errorf("counting name matches for %q: %w", query, err)
-	}
 	nameArgs := []any{fq}
 	nameArgs = append(nameArgs, filterArgs...)
 	nameArgs = append(nameArgs, fq, limit+1, offset)
@@ -1666,6 +1660,16 @@ func (s *Store) SearchPageWithOptions(
 			return nil, false, err
 		}
 		return nameHits, true, nil
+	}
+	nameCount := offset + len(nameHits)
+	if offset > 0 && len(nameHits) == 0 {
+		countArgs := append([]any{fq}, filterArgs...)
+		err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+nodeFrom+`
+			WHERE n.id IN (SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH ?)
+			  AND n.trashed_at IS NULL `+filterSQL, countArgs...).Scan(&nameCount)
+		if err != nil {
+			return nil, false, fmt.Errorf("counting name matches for %q: %w", query, err)
+		}
 	}
 
 	// Offset applies after the complete name partition. Content excludes every

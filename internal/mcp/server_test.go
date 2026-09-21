@@ -2,14 +2,17 @@ package mcp
 
 import (
 	"context"
+	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"testing"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/docbank/internal/api"
 	"go.kenn.io/docbank/internal/client"
 )
 
@@ -20,12 +23,23 @@ func TestServerAdvertisesOnlyReadToolsAndCallsDaemon(t *testing.T) {
 		assert.Equal(t, "3", r.URL.Query().Get("limit"))
 		offset := r.URL.Query().Get("offset")
 		assert.Contains(t, []string{"0", "7"}, offset)
-		w.Header().Set("Content-Type", "application/json")
-		if offset == "0" {
-			_, _ = w.Write([]byte(`{"mode":"lexical","hits":[{"node":{"id":7,"name":"fixture.pdf","kind":"file","current_version_id":"11111111-1111-4111-8111-111111111111","blob_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":42,"revision":1,"created_at":"2026-01-01T00:00:00Z","modified_at":"2026-01-01T00:00:00Z"},"path":"/fixture.pdf","match":"content","evidence_kind":"rendition_segment","build_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","segment_id":"segment-1","excerpt":"synthetic registration"}],"limit":3,"offset":0,"next_offset":1,"truncated":false}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"mode":"lexical","hits":[{"node":{"id":7,"name":"fixture.pdf","kind":"file","current_version_id":"11111111-1111-4111-8111-111111111111","blob_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":42,"revision":1,"created_at":"2026-01-01T00:00:00Z","modified_at":"2026-01-01T00:00:00Z"},"path":"/fixture.pdf","match":"content","evidence_kind":"rendition_segment","build_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","segment_id":"segment-1","excerpt":"synthetic registration"}],"limit":3,"offset":7,"next_offset":8,"truncated":false}`))
+		offsetValue, _ := strconv.Atoi(offset)
+		_ = json.MarshalWrite(w, api.EvidenceSearchReport{
+			Mode: "lexical",
+			Hits: []api.EvidenceSearchHit{{
+				Node: api.Node{
+					ID: 7, Name: "fixture.pdf", Kind: "file",
+					CurrentVersionID: "11111111-1111-4111-8111-111111111111",
+					BlobHash:         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					Size:             42, Revision: 1, CreatedAt: "2026-01-01T00:00:00Z",
+					ModifiedAt: "2026-01-01T00:00:00Z",
+				},
+				Path: "/fixture.pdf", Match: "content", EvidenceKind: "rendition_segment",
+				BuildID:   "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				SegmentID: "segment-1", Excerpt: "synthetic registration",
+			}},
+			Limit: 3, Offset: offsetValue, NextOffset: offsetValue + 1,
+		})
 	}))
 	defer daemon.Close()
 

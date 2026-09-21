@@ -264,13 +264,22 @@ func TestSearchExplainedLexicalCandidatesOffsetsUniqueRenditionDocuments(t *test
 	require.NoError(t, s.PublishRenditionAndLexicalHeads(t.Context(), attachment, RenditionHeadRecord{
 		ContentVersionID: versions[0], ProcessingProfileFingerprint: profile.Fingerprint,
 		AttachmentID: attachment.ID, PublishedAt: embeddingCatalogTime}, generation.ID))
+	secondProfile := catalogProcessingProfile(t, true)
+	secondAttachment := RenditionAttachmentRecord{
+		ID: catalogAttachmentSecond, VaultID: s.VaultID(), ContentVersionID: versions[1],
+		BuildID: build.ID, Profile: secondProfile, AttachedAt: embeddingCatalogTime,
+	}
+	require.NoError(t, s.PublishRenditionAndLexicalHeads(t.Context(), secondAttachment, RenditionHeadRecord{
+		ContentVersionID: versions[1], ProcessingProfileFingerprint: secondProfile.Fingerprint,
+		AttachmentID: secondAttachment.ID, PublishedAt: embeddingCatalogTime}, generation.ID))
 
 	candidates, truncated, err := s.SearchExplainedLexicalCandidates(
 		t.Context(), "mercury", 1, 0, SearchOptions{},
 	)
 	require.NoError(t, err)
-	assert.False(t, truncated, "a second matching segment is not a second logical document")
+	assert.True(t, truncated, "the second document, not its second segment, continues the page")
 	require.Len(t, candidates, 1)
+	assert.Equal(t, versions[0], candidates[0].Node.CurrentVersionID)
 	assert.Equal(t, build.LexicalSegments[0].ID, candidates[0].SegmentID)
 	assert.Equal(t, build.ID, candidates[0].BuildID)
 	assert.Contains(t, candidates[0].Excerpt, "mercury")
@@ -278,6 +287,15 @@ func TestSearchExplainedLexicalCandidatesOffsetsUniqueRenditionDocuments(t *test
 
 	candidates, truncated, err = s.SearchExplainedLexicalCandidates(
 		t.Context(), "mercury", 1, 1, SearchOptions{},
+	)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, versions[1], candidates[0].Node.CurrentVersionID)
+	assert.Equal(t, build.LexicalSegments[0].ID, candidates[0].SegmentID)
+	assert.False(t, truncated)
+
+	candidates, truncated, err = s.SearchExplainedLexicalCandidates(
+		t.Context(), "mercury", 1, 2, SearchOptions{},
 	)
 	require.NoError(t, err)
 	assert.Empty(t, candidates)
