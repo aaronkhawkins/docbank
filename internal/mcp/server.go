@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"unicode/utf8"
 
@@ -23,22 +24,76 @@ func NewServer(factory ClientFactory) *sdkmcp.Server {
 	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "docbank", Version: version.Version}, nil)
 
 	type searchInput struct {
-		Query  string `json:"query" jsonschema:"Lexical query (1-4096 characters)."`
-		Limit  int    `json:"limit,omitempty" jsonschema:"Maximum results (1-100, default 20)."`
-		Offset int    `json:"offset,omitempty" jsonschema:"Zero-based result offset."`
+		Query       string `json:"query" jsonschema:"Lexical query (1-4096 characters)."`
+		VaultID     string `json:"vault_id,omitempty" jsonschema:"Vault UUID returned by resolve_directory; required with under_node_id."`
+		UnderNodeID int64  `json:"under_node_id,omitempty" jsonschema:"Stable directory node ID returned by resolve_directory; required with vault_id."`
+		Limit       int    `json:"limit,omitempty" jsonschema:"Maximum results (1-100, default 20)."`
+		Offset      int    `json:"offset,omitempty" jsonschema:"Zero-based result offset."`
 	}
 	sdkmcp.AddTool(server, &sdkmcp.Tool{Name: "search_documents",
-		Description: "Search live documents lexically and return stable evidence identities and bounded excerpts."},
+		Description: "Search live documents lexically, optionally below a directory resolved by resolve_directory. Returns stable evidence identities and bounded excerpts; use list_documents to browse without query terms."},
 		func(ctx context.Context, _ *sdkmcp.CallToolRequest, in searchInput) (*sdkmcp.CallToolResult, api.EvidenceSearchReport, error) {
 			if in.Limit == 0 {
 				in.Limit = 20
 			}
 			if strings.TrimSpace(in.Query) == "" || utf8.RuneCountInString(in.Query) > 4096 ||
+				!validScope(in.VaultID, in.UnderNodeID) ||
 				in.Limit < 1 || in.Limit > 100 || in.Offset < 0 {
 				return invalidToolCall[api.EvidenceSearchReport]()
 			}
 			return daemonCall(ctx, factory, func(c *client.Client) (api.EvidenceSearchReport, error) {
-				return c.SearchEvidence(ctx, in.Query, in.Limit, in.Offset)
+				return c.SearchEvidenceWithOptions(ctx, in.Query, in.Limit, client.EvidenceSearchOptions{
+					VaultID: in.VaultID, UnderNodeID: in.UnderNodeID, Offset: in.Offset,
+				})
+			})
+		})
+
+	type directoryInput struct {
+		Path string `json:"path" jsonschema:"Absolute live virtual directory path."`
+	}
+	type resolvedDirectory struct {
+		VaultID   string   `json:"vault_id"`
+		Directory api.Node `json:"directory"`
+	}
+	sdkmcp.AddTool(server, &sdkmcp.Tool{Name: "resolve_directory",
+		Description: "Resolve an absolute live directory path to vault-qualified stable scope authority for list_documents or search_documents."},
+		func(ctx context.Context, _ *sdkmcp.CallToolRequest, in directoryInput) (*sdkmcp.CallToolResult, resolvedDirectory, error) {
+			if !strings.HasPrefix(in.Path, "/") {
+				return invalidToolCall[resolvedDirectory]()
+			}
+			return daemonCall(ctx, factory, func(c *client.Client) (resolvedDirectory, error) {
+				info, err := c.Info(ctx)
+				if err != nil {
+					return resolvedDirectory{}, err
+				}
+				directory, err := c.Stat(ctx, in.Path)
+				if err != nil {
+					return resolvedDirectory{}, err
+				}
+				if directory.Kind != "dir" || directory.TrashedAt != "" {
+					return resolvedDirectory{}, errors.New("resolved node is not a live directory")
+				}
+				return resolvedDirectory{VaultID: info.VaultID, Directory: directory}, nil
+			})
+		})
+
+	type documentsInput struct {
+		VaultID     string `json:"vault_id,omitempty" jsonschema:"Vault UUID returned by resolve_directory; required with under_node_id."`
+		UnderNodeID int64  `json:"under_node_id,omitempty" jsonschema:"Stable directory node ID returned by resolve_directory; required with vault_id."`
+		Limit       int    `json:"limit,omitempty" jsonschema:"Page size (1-100, default 20)."`
+		Offset      int    `json:"offset,omitempty" jsonschema:"Zero-based page offset."`
+	}
+	sdkmcp.AddTool(server, &sdkmcp.Tool{Name: "list_documents",
+		Description: "Browse current live files recursively at vault root or below a directory resolved by resolve_directory. This is inventory, not lexical search."},
+		func(ctx context.Context, _ *sdkmcp.CallToolRequest, in documentsInput) (*sdkmcp.CallToolResult, api.DocumentPage, error) {
+			if in.Limit == 0 {
+				in.Limit = 20
+			}
+			if !validScope(in.VaultID, in.UnderNodeID) || in.Limit < 1 || in.Limit > 100 || in.Offset < 0 {
+				return invalidToolCall[api.DocumentPage]()
+			}
+			return daemonCall(ctx, factory, func(c *client.Client) (api.DocumentPage, error) {
+				return c.Documents(ctx, in.VaultID, in.UnderNodeID, in.Limit, in.Offset)
 			})
 		})
 
@@ -124,6 +179,13 @@ func NewServer(factory ClientFactory) *sdkmcp.Server {
 			})
 		})
 	return server
+}
+
+func validScope(vaultID string, underNodeID int64) bool {
+	if vaultID == "" && underNodeID == 0 {
+		return true
+	}
+	return client.IsCanonicalUUIDv4(vaultID) && underNodeID > 0
 }
 
 func invalidToolCall[T any]() (*sdkmcp.CallToolResult, T, error) {

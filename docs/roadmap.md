@@ -211,5 +211,6 @@ management, and browser/TUI mutation controls are deliberately deferred.
 
 At-rest encryption of the live store, encryption for backup repositories,
 importing attachments out of msgvault, and multi-user/sharing. Daemon-owned
-document processing, embeddings, semantic search, and an MCP server are in
-progress on top of the derivative catalog.
+document processing, embeddings, semantic search, and broader MCP capabilities
+are in progress on top of the derivative catalog; bounded read-only MCP
+document discovery and evidence retrieval are available now.

@@ -55,6 +55,70 @@ func TestStatByIDAndPath(t *testing.T) {
 	assert.Contains(t, body, `"code":"not_found"`)
 }
 
+func TestDocumentInventoryPagesRootAndDirectory(t *testing.T) {
+	ts, s := newTestServer(t, nil)
+	finance, err := s.Mkdir(t.Context(), s.RootID(), "finance")
+	require.NoError(t, err)
+	archive, err := s.Mkdir(t.Context(), finance.ID, "archive")
+	require.NoError(t, err)
+	_, err = s.CreateFile(t.Context(), archive.ID, "old.pdf", testHash("inventory-old"), 8,
+		"application/pdf")
+	require.NoError(t, err)
+	current, err := s.CreateFile(t.Context(), finance.ID, "report.txt", testHash("inventory-report"), 7,
+		"text/plain")
+	require.NoError(t, err)
+	_, err = s.CreateFile(t.Context(), s.RootID(), "root.txt", testHash("inventory-root"), 9,
+		"text/plain")
+	require.NoError(t, err)
+
+	resp, body := get(t, ts, "/api/v1/documents?limit=2&offset=0", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	var page api.DocumentPage
+	require.NoError(t, json.Unmarshal([]byte(body), &page))
+	assert.Equal(t, s.VaultID(), page.VaultID)
+	assert.Equal(t, s.RootID(), page.Directory.ID)
+	assert.Equal(t, "/", page.Directory.Path)
+	assert.Equal(t, 3, page.Total)
+	assert.Equal(t, 2, page.NextOffset)
+	assert.True(t, page.Truncated)
+	require.Len(t, page.Items, 2)
+	assert.Equal(t, "/finance/archive/old.pdf", page.Items[0].Path)
+	assert.NotEmpty(t, page.Items[0].CurrentVersionID)
+
+	path := fmt.Sprintf("/api/v1/documents?under_node_id=%d&vault_id=%s&limit=10&offset=0",
+		finance.ID, s.VaultID())
+	resp, body = get(t, ts, path, nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	require.NoError(t, json.Unmarshal([]byte(body), &page))
+	assert.Equal(t, finance.ID, page.UnderNodeID)
+	assert.Equal(t, 2, page.Total)
+	assert.Equal(t, 2, page.NextOffset)
+	assert.False(t, page.Truncated)
+	assert.Equal(t, current.ID, page.Items[1].ID)
+
+	resp, body = get(t, ts, "/api/v1/documents?limit=2&offset=9", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	require.NoError(t, json.Unmarshal([]byte(body), &page))
+	assert.Empty(t, page.Items)
+	assert.Equal(t, 9, page.NextOffset)
+	assert.False(t, page.Truncated)
+
+	resp, body = get(t, ts, fmt.Sprintf(
+		"/api/v1/documents?under_node_id=%d&vault_id=11111111-1111-4111-8111-111111111111&limit=10",
+		finance.ID), nil)
+	assert.Equal(t, http.StatusConflict, resp.StatusCode, body)
+	assert.Contains(t, body, `"code":"vault_mismatch"`)
+
+	for _, invalidScope := range []string{
+		fmt.Sprintf("under_node_id=%d", finance.ID),
+		"vault_id=" + s.VaultID(),
+	} {
+		resp, body = get(t, ts, "/api/v1/documents?limit=10&"+invalidScope, nil)
+		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, body)
+		assert.Contains(t, body, `"code":"invalid_scope"`)
+	}
+}
+
 func TestEvidenceSearchIsExplicitlyLexicalAndCitesNameAuthority(t *testing.T) {
 	ts, s := newTestServer(t, nil)
 	docs, err := s.Mkdir(t.Context(), s.RootID(), "docs")
@@ -62,12 +126,19 @@ func TestEvidenceSearchIsExplicitlyLexicalAndCitesNameAuthority(t *testing.T) {
 	node, err := s.CreateFile(t.Context(), docs.ID, "synthetic-registration.pdf",
 		testHash("evidence-search"), 42, "application/pdf")
 	require.NoError(t, err)
+	_, err = s.CreateFile(t.Context(), s.RootID(), "registration-outside.pdf",
+		testHash("evidence-search-outside"), 43, "application/pdf")
+	require.NoError(t, err)
 
-	resp, body := get(t, ts, "/api/v1/evidence/search?q=registration&limit=5", nil)
+	path := fmt.Sprintf("/api/v1/evidence/search?q=registration&limit=5&vault_id=%s&under_node_id=%d",
+		s.VaultID(), docs.ID)
+	resp, body := get(t, ts, path, nil)
 	require.Equal(t, http.StatusOK, resp.StatusCode, body)
 	var report api.EvidenceSearchReport
 	require.NoError(t, json.Unmarshal([]byte(body), &report))
 	assert.Equal(t, "lexical", report.Mode)
+	assert.Equal(t, s.VaultID(), report.VaultID)
+	assert.Equal(t, docs.ID, report.UnderNodeID)
 	assert.Equal(t, 0, report.Offset)
 	assert.Equal(t, 1, report.NextOffset)
 	assert.False(t, report.Truncated)
@@ -77,6 +148,21 @@ func TestEvidenceSearchIsExplicitlyLexicalAndCitesNameAuthority(t *testing.T) {
 	assert.Equal(t, "node_name", report.Hits[0].EvidenceKind)
 	assert.Empty(t, report.Hits[0].BuildID)
 	assert.Empty(t, report.Hits[0].BlobHash)
+
+	resp, body = get(t, ts, fmt.Sprintf(
+		"/api/v1/evidence/search?q=registration&limit=5&vault_id=11111111-1111-4111-8111-111111111111&under_node_id=%d",
+		docs.ID), nil)
+	assert.Equal(t, http.StatusConflict, resp.StatusCode, body)
+	assert.Contains(t, body, `"code":"vault_mismatch"`)
+
+	for _, invalidScope := range []string{
+		fmt.Sprintf("under_node_id=%d", docs.ID),
+		"vault_id=" + s.VaultID(),
+	} {
+		resp, body = get(t, ts, "/api/v1/evidence/search?q=registration&limit=5&"+invalidScope, nil)
+		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, body)
+		assert.Contains(t, body, `"code":"invalid_scope"`)
+	}
 }
 
 func TestDocumentViewerBindsHistoricalVersionAndOCRToNode(t *testing.T) {

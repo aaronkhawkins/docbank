@@ -135,6 +135,70 @@ func TestRoundTrip(t *testing.T) {
 	assert.Equal(t, "/filed", restored.Path)
 }
 
+func TestDocumentsReturnsRecursivePageWithVaultAuthority(t *testing.T) {
+	c, s := newClient(t, serverKey)
+	directory, err := s.Mkdir(t.Context(), s.RootID(), "finance")
+	require.NoError(t, err)
+	_, err = s.CreateFile(t.Context(), directory.ID, "report.txt", strings.Repeat("d", 64), 7,
+		"text/plain")
+	require.NoError(t, err)
+
+	page, err := c.Documents(t.Context(), s.VaultID(), directory.ID, 20, 0)
+	require.NoError(t, err)
+	assert.Equal(t, s.VaultID(), page.VaultID)
+	assert.Equal(t, directory.ID, page.UnderNodeID)
+	assert.Equal(t, "/finance", page.Directory.Path)
+	assert.Equal(t, 1, page.NextOffset)
+	assert.False(t, page.Truncated)
+	require.Len(t, page.Items, 1)
+	assert.Equal(t, "/finance/report.txt", page.Items[0].Path)
+
+	_, err = c.Documents(t.Context(), "bad", directory.ID, 20, 0)
+	require.ErrorContains(t, err, "canonical UUIDv4")
+	_, err = c.Documents(t.Context(), s.VaultID(), directory.ID, 0, 0)
+	require.ErrorContains(t, err, "between 1 and 5000")
+	_, err = c.Documents(t.Context(), "", directory.ID, 20, 0)
+	require.ErrorContains(t, err, "must be supplied together")
+	_, err = c.Documents(t.Context(), s.VaultID(), 0, 20, 0)
+	require.ErrorContains(t, err, "must be supplied together")
+
+	beyond, err := c.Documents(t.Context(), s.VaultID(), directory.ID, 20, 9)
+	require.NoError(t, err)
+	assert.Empty(t, beyond.Items)
+	assert.Equal(t, 9, beyond.NextOffset)
+	assert.False(t, beyond.Truncated)
+}
+
+func TestSearchEvidenceScopesByVaultAndDirectory(t *testing.T) {
+	c, s := newClient(t, serverKey)
+	directory, err := s.Mkdir(t.Context(), s.RootID(), "finance")
+	require.NoError(t, err)
+	node, err := s.CreateFile(t.Context(), directory.ID, "quarterly-report.pdf",
+		strings.Repeat("e", 64), 7, "application/pdf")
+	require.NoError(t, err)
+	_, err = s.CreateFile(t.Context(), s.RootID(), "quarterly-outside.pdf",
+		strings.Repeat("f", 64), 8, "application/pdf")
+	require.NoError(t, err)
+
+	report, err := c.SearchEvidenceWithOptions(t.Context(), "quarterly", 20,
+		client.EvidenceSearchOptions{VaultID: s.VaultID(), UnderNodeID: directory.ID})
+	require.NoError(t, err)
+	assert.Equal(t, s.VaultID(), report.VaultID)
+	assert.Equal(t, directory.ID, report.UnderNodeID)
+	require.Len(t, report.Hits, 1)
+	assert.Equal(t, node.ID, report.Hits[0].Node.ID)
+
+	_, err = c.SearchEvidenceWithOptions(t.Context(), "quarterly", 20,
+		client.EvidenceSearchOptions{VaultID: "bad", UnderNodeID: directory.ID})
+	require.ErrorContains(t, err, "canonical UUIDv4")
+	_, err = c.SearchEvidenceWithOptions(t.Context(), "quarterly", 20,
+		client.EvidenceSearchOptions{UnderNodeID: directory.ID})
+	require.ErrorContains(t, err, "must be supplied together")
+	_, err = c.SearchEvidenceWithOptions(t.Context(), "quarterly", 20,
+		client.EvidenceSearchOptions{VaultID: s.VaultID()})
+	require.ErrorContains(t, err, "must be supplied together")
+}
+
 func TestProvenanceReturnsStableOriginAuthority(t *testing.T) {
 	c, s := newClient(t, serverKey)
 	run, err := s.BeginIngest(t.Context(), "watch", "agent-sessions")
@@ -234,6 +298,7 @@ func TestSearchWithOptionsUsesStableTagIdentity(t *testing.T) {
 }
 
 func TestSearchClientsForwardAndValidatePagination(t *testing.T) {
+	const vaultID = "22222222-2222-4222-8222-222222222222"
 	offsets := make(chan string, 2)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		offsets <- r.URL.Query().Get("offset")
@@ -244,7 +309,7 @@ func TestSearchClientsForwardAndValidatePagination(t *testing.T) {
 			})
 		case "/api/v1/evidence/search":
 			_ = json.MarshalWrite(w, api.EvidenceSearchReport{
-				Mode: "lexical", Hits: []api.EvidenceSearchHit{}, Limit: 3,
+				Mode: "lexical", VaultID: vaultID, Hits: []api.EvidenceSearchHit{}, Limit: 3,
 				Offset: 7, NextOffset: 7,
 			})
 		default:
@@ -273,6 +338,7 @@ func TestSearchClientsForwardAndValidatePagination(t *testing.T) {
 }
 
 func TestSearchClientsRejectMalformedPaginationAuthority(t *testing.T) {
+	const vaultID = "22222222-2222-4222-8222-222222222222"
 	searchCases := []struct {
 		name   string
 		report api.SearchReport
@@ -297,8 +363,8 @@ func TestSearchClientsRejectMalformedPaginationAuthority(t *testing.T) {
 	}
 
 	for _, report := range []api.EvidenceSearchReport{
-		{Mode: "lexical", Limit: 3, Offset: 4, NextOffset: 5},
-		{Mode: "lexical", Limit: 3, Offset: 4, NextOffset: 4, Truncated: true},
+		{Mode: "lexical", VaultID: vaultID, Limit: 3, Offset: 4, NextOffset: 5},
+		{Mode: "lexical", VaultID: vaultID, Limit: 3, Offset: 4, NextOffset: 4, Truncated: true},
 	} {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			_ = json.MarshalWrite(w, report)

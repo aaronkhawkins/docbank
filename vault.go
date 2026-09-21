@@ -70,6 +70,10 @@ const (
 	DefaultChildrenLimit = 500
 	// MaxChildrenLimit is the largest child page one embedded call may materialize.
 	MaxChildrenLimit = 5000
+	// DefaultDocumentLimit is the page size used when DocumentOptions.Limit is zero.
+	DefaultDocumentLimit = 500
+	// MaxDocumentLimit is the largest recursive document page one embedded call may materialize.
+	MaxDocumentLimit = 5000
 	// DefaultTrashEmptyMaxRoots bounds one EmptyTrash call when MaxRoots is zero.
 	DefaultTrashEmptyMaxRoots = 100
 	looseEncodingRawName      = "raw"
@@ -338,6 +342,37 @@ func (v *Vault) Children(
 	}
 	for _, child := range children {
 		page.Items = append(page.Items, fromStoreNode(child))
+	}
+	return page, nil
+}
+
+// Documents lists one bounded recursive page of live files beneath a
+// directory. A zero directoryID selects the vault root.
+func (v *Vault) Documents(
+	ctx context.Context, directoryID int64, opts DocumentOptions,
+) (DocumentPage, error) {
+	if err := v.begin(); err != nil {
+		return DocumentPage{}, err
+	}
+	defer v.lifecycle.RUnlock()
+	limit := opts.Limit
+	if limit == 0 {
+		limit = DefaultDocumentLimit
+	}
+	view, err := v.metadata.DocumentPage(ctx, directoryID, limit, opts.Offset)
+	if err != nil {
+		return DocumentPage{}, err
+	}
+	page := DocumentPage{
+		Directory: DocumentItem{Node: fromStoreNode(view.Directory.Node), Path: view.Directory.Path},
+		Items:     make([]DocumentItem, 0, len(view.Documents)), Total: view.Total,
+		Limit: limit, Offset: opts.Offset, NextOffset: opts.Offset + len(view.Documents),
+		Truncated: opts.Offset+len(view.Documents) < view.Total,
+	}
+	for _, document := range view.Documents {
+		page.Items = append(page.Items, DocumentItem{
+			Node: fromStoreNode(document.Node), Path: document.Path,
+		})
 	}
 	return page, nil
 }

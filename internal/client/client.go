@@ -442,6 +442,60 @@ func (c *Client) ChildrenPage(
 	return page, nil
 }
 
+// Documents returns one bounded canonical-path-ordered recursive file page.
+// A root request omits both vaultID and underNodeID. A directory request must
+// supply both so a previously resolved scope fails closed in another vault.
+func (c *Client) Documents(
+	ctx context.Context, vaultID string, underNodeID int64, limit, offset int,
+) (api.DocumentPage, error) {
+	var page api.DocumentPage
+	if !validVaultDirectoryScope(vaultID, underNodeID) {
+		return page, errors.New("document scope vault ID and node ID must be supplied together")
+	}
+	if vaultID != "" && !validUUIDv4(vaultID) {
+		return page, errors.New("document scope vault ID must be a canonical UUIDv4")
+	}
+	if underNodeID < 0 {
+		return page, errors.New("document scope node ID must be positive")
+	}
+	if limit < 1 || limit > 5000 {
+		return page, errors.New("document page limit must be between 1 and 5000")
+	}
+	if offset < 0 {
+		return page, errors.New("document page offset must not be negative")
+	}
+	query := url.Values{}
+	query.Set("limit", strconv.Itoa(limit))
+	query.Set("offset", strconv.Itoa(offset))
+	if vaultID != "" {
+		query.Set("vault_id", vaultID)
+	}
+	if underNodeID != 0 {
+		query.Set("under_node_id", strconv.FormatInt(underNodeID, 10))
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/documents?"+query.Encode(), nil, nil, &page); err != nil {
+		return api.DocumentPage{}, err
+	}
+	if !validUUIDv4(page.VaultID) || (vaultID != "" && page.VaultID != vaultID) ||
+		page.UnderNodeID < 1 || page.Directory.ID != page.UnderNodeID ||
+		page.Directory.Kind != "dir" || page.Directory.TrashedAt != "" ||
+		!strings.HasPrefix(page.Directory.Path, "/") || page.Total < 0 ||
+		page.Limit != limit || page.Offset != offset || len(page.Items) > limit ||
+		page.NextOffset != offset+len(page.Items) ||
+		page.Truncated != (page.NextOffset < page.Total) ||
+		(len(page.Items) == 0 && offset < page.Total) ||
+		(len(page.Items) > 0 && offset+len(page.Items) > page.Total) {
+		return api.DocumentPage{}, errors.New("document response has inconsistent pagination authority")
+	}
+	for _, item := range page.Items {
+		if item.ID < 1 || item.Kind != "file" || item.TrashedAt != "" ||
+			!validUUIDv4(item.CurrentVersionID) || !strings.HasPrefix(item.Path, "/") {
+			return api.DocumentPage{}, errors.New("document response has invalid item authority")
+		}
+	}
+	return page, nil
+}
+
 func (c *Client) Content(ctx context.Context, id int64) (*ContentStream, error) {
 	return c.content(ctx, fmt.Sprintf("/api/v1/nodes/%d/content", id),
 		fmt.Sprintf("content of node %d", id))
@@ -833,6 +887,21 @@ func (c *Client) Search(ctx context.Context, query string, limit int) (api.Searc
 func (c *Client) SearchEvidence(
 	ctx context.Context, query string, limit, offset int,
 ) (api.EvidenceSearchReport, error) {
+	return c.SearchEvidenceWithOptions(ctx, query, limit, EvidenceSearchOptions{Offset: offset})
+}
+
+// EvidenceSearchOptions binds an optional directory scope to one vault.
+type EvidenceSearchOptions struct {
+	VaultID     string
+	UnderNodeID int64
+	Offset      int
+}
+
+// SearchEvidenceWithOptions returns lexical evidence, optionally restricted
+// to descendants of one stable directory identity in one vault.
+func (c *Client) SearchEvidenceWithOptions(
+	ctx context.Context, query string, limit int, opts EvidenceSearchOptions,
+) (api.EvidenceSearchReport, error) {
 	var report api.EvidenceSearchReport
 	if strings.TrimSpace(query) == "" {
 		return report, errors.New("evidence search query must not be empty")
@@ -840,18 +909,38 @@ func (c *Client) SearchEvidence(
 	if limit < 1 || limit > 100 {
 		return report, errors.New("evidence search limit must be between 1 and 100")
 	}
-	if offset < 0 {
+	if !validVaultDirectoryScope(opts.VaultID, opts.UnderNodeID) {
+		return report, errors.New("evidence search vault ID and node ID must be supplied together")
+	}
+	if opts.VaultID != "" && !validUUIDv4(opts.VaultID) {
+		return report, errors.New("evidence search vault ID must be a canonical UUIDv4")
+	}
+	if opts.UnderNodeID < 0 {
+		return report, errors.New("evidence search directory node ID must be positive")
+	}
+	if opts.Offset < 0 {
 		return report, errors.New("evidence search offset must not be negative")
 	}
-	path := "/api/v1/evidence/search?q=" + url.QueryEscape(query) + "&limit=" + strconv.Itoa(limit) +
-		"&offset=" + strconv.Itoa(offset)
+	queryValues := url.Values{}
+	queryValues.Set("q", query)
+	queryValues.Set("limit", strconv.Itoa(limit))
+	queryValues.Set("offset", strconv.Itoa(opts.Offset))
+	if opts.VaultID != "" {
+		queryValues.Set("vault_id", opts.VaultID)
+	}
+	if opts.UnderNodeID != 0 {
+		queryValues.Set("under_node_id", strconv.FormatInt(opts.UnderNodeID, 10))
+	}
+	path := "/api/v1/evidence/search?" + queryValues.Encode()
 	if err := c.do(ctx, http.MethodGet, path, nil, nil, &report); err != nil {
 		return api.EvidenceSearchReport{}, err
 	}
-	if report.Mode != "lexical" {
+	if report.Mode != "lexical" || !validUUIDv4(report.VaultID) ||
+		(opts.VaultID != "" && report.VaultID != opts.VaultID) ||
+		report.UnderNodeID != opts.UnderNodeID || report.Limit != limit || len(report.Hits) > limit {
 		return api.EvidenceSearchReport{}, errors.New("evidence search response has inconsistent authority")
 	}
-	if !validSearchPagination(limit, offset, report.Limit, report.Offset, report.NextOffset,
+	if !validSearchPagination(limit, opts.Offset, report.Limit, report.Offset, report.NextOffset,
 		len(report.Hits), report.Truncated) {
 		return api.EvidenceSearchReport{}, errors.New("evidence search response has inconsistent pagination authority")
 	}
@@ -880,6 +969,10 @@ func (c *Client) SearchEvidence(
 		}
 	}
 	return report, nil
+}
+
+func validVaultDirectoryScope(vaultID string, underNodeID int64) bool {
+	return (vaultID == "") == (underNodeID == 0)
 }
 
 // RenditionText returns one bounded page of normalized text from an immutable
