@@ -84,7 +84,7 @@ var searchCmd = &cobra.Command{
 			underPath = directory.Path
 		}
 		rep, err := c.SearchWithOptions(
-			cmd.Context(), strings.Join(args, " "), searchLimit, opts,
+			cmd.Context(), strings.Join(args, " "), searchLimit, 0, opts,
 		)
 		if err != nil {
 			return err

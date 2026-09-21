@@ -526,7 +526,9 @@ type SearchHit struct {
 // SearchReport is one bounded search result page.
 type SearchReport struct {
 	Hits           []SearchHit `json:"hits"`
-	Limit          int         `json:"limit"`
+	Limit          int         `json:"limit" minimum:"1" maximum:"1000"`
+	Offset         int         `json:"offset" minimum:"0"`
+	NextOffset     int         `json:"next_offset" minimum:"0"`
 	Truncated      bool        `json:"truncated"`
 	TagID          string      `json:"tag_id,omitzero"`
 	MIMEType       string      `json:"mime_type,omitzero"`
@@ -550,10 +552,12 @@ type EvidenceSearchHit struct {
 
 // EvidenceSearchReport is one bounded, explicitly lexical result page.
 type EvidenceSearchReport struct {
-	Mode      string              `json:"mode" enum:"lexical"`
-	Hits      []EvidenceSearchHit `json:"hits"`
-	Limit     int                 `json:"limit" minimum:"1" maximum:"100"`
-	Truncated bool                `json:"truncated"`
+	Mode       string              `json:"mode" enum:"lexical"`
+	Hits       []EvidenceSearchHit `json:"hits"`
+	Limit      int                 `json:"limit" minimum:"1" maximum:"100"`
+	Offset     int                 `json:"offset" minimum:"0"`
+	NextOffset int                 `json:"next_offset" minimum:"0"`
+	Truncated  bool                `json:"truncated"`
 }
 
 // RenditionTextSegment is one immutable, addressable lexical evidence span.

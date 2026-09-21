@@ -37,7 +37,7 @@ func NewServer(factory ClientFactory) *sdkmcp.Server {
 				return invalidToolCall[api.EvidenceSearchReport]()
 			}
 			return daemonCall(ctx, factory, func(c *client.Client) (api.EvidenceSearchReport, error) {
-				return c.SearchEvidence(ctx, in.Query, in.Limit)
+				return c.SearchEvidence(ctx, in.Query, in.Limit, 0)
 			})
 		})
 

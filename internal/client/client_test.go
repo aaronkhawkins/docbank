@@ -195,7 +195,7 @@ func TestSearchWithOptionsUsesStableTagIdentity(t *testing.T) {
 	require.NoError(t, err)
 
 	report, err := c.SearchWithOptions(
-		ctx, "insurance", 10, client.SearchOptions{
+		ctx, "insurance", 10, 0, client.SearchOptions{
 			TagID: tag.ID, MIMEType: "APPLICATION/PDF", UnderNodeID: directory.ID,
 			ModifiedSince: "2000-01-01T00:00:00-05:00", ModifiedBefore: "2100-01-01T00:00:00Z",
 		},
@@ -209,28 +209,101 @@ func TestSearchWithOptionsUsesStableTagIdentity(t *testing.T) {
 	require.Len(t, report.Hits, 1)
 	assert.Equal(t, tagged.ID, report.Hits[0].Node.ID)
 
-	filterReport, err := c.SearchWithOptions(ctx, "", 10, client.SearchOptions{TagID: tag.ID})
+	filterReport, err := c.SearchWithOptions(ctx, "", 10, 0, client.SearchOptions{TagID: tag.ID})
 	require.NoError(t, err)
 	require.Len(t, filterReport.Hits, 1)
 	assert.Equal(t, "filter", filterReport.Hits[0].Match)
-	_, err = c.SearchWithOptions(ctx, "", 10, client.SearchOptions{})
+	_, err = c.SearchWithOptions(ctx, "", 10, 0, client.SearchOptions{})
 	require.ErrorIs(t, err, store.ErrSearchQueryRequired)
 	code, ok := client.ProblemCode(err)
 	require.True(t, ok)
 	assert.Equal(t, "search_query_required", code)
 
-	_, err = c.SearchWithOptions(ctx, "insurance", 10, client.SearchOptions{TagID: "bad"})
+	_, err = c.SearchWithOptions(ctx, "insurance", 10, 0, client.SearchOptions{TagID: "bad"})
 	require.ErrorContains(t, err, "canonical UUIDv4")
-	_, err = c.SearchWithOptions(ctx, "insurance", 10, client.SearchOptions{
+	_, err = c.SearchWithOptions(ctx, "insurance", 10, 0, client.SearchOptions{
 		MIMEType: "application/pdf; version=1",
 	})
 	require.ErrorContains(t, err, "must not include parameters")
-	_, err = c.SearchWithOptions(ctx, "insurance", 10, client.SearchOptions{UnderNodeID: -1})
+	_, err = c.SearchWithOptions(ctx, "insurance", 10, 0, client.SearchOptions{UnderNodeID: -1})
 	require.ErrorContains(t, err, "directory node ID must be positive")
-	_, err = c.SearchWithOptions(ctx, "insurance", 10, client.SearchOptions{
+	_, err = c.SearchWithOptions(ctx, "insurance", 10, 0, client.SearchOptions{
 		ModifiedSince: "2100-01-01T00:00:00Z", ModifiedBefore: "2000-01-01T00:00:00Z",
 	})
 	require.ErrorContains(t, err, "must be earlier")
+}
+
+func TestSearchClientsForwardAndValidatePagination(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "7", r.URL.Query().Get("offset"))
+		switch r.URL.Path {
+		case "/api/v1/search":
+			_ = json.MarshalWrite(w, api.SearchReport{
+				Hits: []api.SearchHit{}, Limit: 3, Offset: 7, NextOffset: 7,
+			})
+		case "/api/v1/evidence/search":
+			_ = json.MarshalWrite(w, api.EvidenceSearchReport{
+				Mode: "lexical", Hits: []api.EvidenceSearchHit{}, Limit: 3,
+				Offset: 7, NextOffset: 7,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(ts.Close)
+	c := client.New(ts.URL, "key")
+
+	search, err := c.SearchWithOptions(t.Context(), "insurance", 3, 7, client.SearchOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, 7, search.Offset)
+	assert.Equal(t, 7, search.NextOffset)
+	evidence, err := c.SearchEvidence(t.Context(), "insurance", 3, 7)
+	require.NoError(t, err)
+	assert.Equal(t, 7, evidence.Offset)
+	assert.Equal(t, 7, evidence.NextOffset)
+
+	dead := client.New("http://127.0.0.1:1", "key")
+	_, err = dead.SearchWithOptions(t.Context(), "insurance", 3, -1, client.SearchOptions{})
+	require.ErrorContains(t, err, "offset must not be negative")
+	_, err = dead.SearchEvidence(t.Context(), "insurance", 3, -1)
+	require.ErrorContains(t, err, "offset must not be negative")
+}
+
+func TestSearchClientsRejectMalformedPaginationAuthority(t *testing.T) {
+	searchCases := []struct {
+		name   string
+		report api.SearchReport
+	}{
+		{name: "wrong limit", report: api.SearchReport{Limit: 2, Offset: 4, NextOffset: 4}},
+		{name: "wrong offset", report: api.SearchReport{Limit: 3, Offset: 3, NextOffset: 3}},
+		{name: "wrong next offset", report: api.SearchReport{Limit: 3, Offset: 4, NextOffset: 5}},
+		{name: "empty truncated", report: api.SearchReport{Limit: 3, Offset: 4, NextOffset: 4, Truncated: true}},
+		{name: "too many hits", report: api.SearchReport{Limit: 3, Offset: 4, NextOffset: 8, Hits: make([]api.SearchHit, 4)}},
+	}
+	for _, test := range searchCases {
+		t.Run("search "+test.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.MarshalWrite(w, test.report)
+			}))
+			t.Cleanup(ts.Close)
+			_, err := client.New(ts.URL, "key").SearchWithOptions(
+				t.Context(), "insurance", 3, 4, client.SearchOptions{},
+			)
+			require.ErrorContains(t, err, "inconsistent pagination authority")
+		})
+	}
+
+	for _, report := range []api.EvidenceSearchReport{
+		{Mode: "lexical", Limit: 3, Offset: 4, NextOffset: 5},
+		{Mode: "lexical", Limit: 3, Offset: 4, NextOffset: 4, Truncated: true},
+	} {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.MarshalWrite(w, report)
+		}))
+		_, err := client.New(ts.URL, "key").SearchEvidence(t.Context(), "insurance", 3, 4)
+		ts.Close()
+		require.ErrorContains(t, err, "inconsistent pagination authority")
+	}
 }
 
 func TestMoveToPathValidatesRequestBeforeTransport(t *testing.T) {
