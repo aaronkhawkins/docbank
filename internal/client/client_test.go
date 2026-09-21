@@ -234,8 +234,9 @@ func TestSearchWithOptionsUsesStableTagIdentity(t *testing.T) {
 }
 
 func TestSearchClientsForwardAndValidatePagination(t *testing.T) {
+	offsets := make(chan string, 2)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "7", r.URL.Query().Get("offset"))
+		offsets <- r.URL.Query().Get("offset")
 		switch r.URL.Path {
 		case "/api/v1/search":
 			_ = json.MarshalWrite(w, api.SearchReport{
@@ -261,6 +262,8 @@ func TestSearchClientsForwardAndValidatePagination(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 7, evidence.Offset)
 	assert.Equal(t, 7, evidence.NextOffset)
+	assert.Equal(t, "7", <-offsets)
+	assert.Equal(t, "7", <-offsets)
 
 	dead := client.New("http://127.0.0.1:1", "key")
 	_, err = dead.SearchWithOptions(t.Context(), "insurance", 3, -1, client.SearchOptions{})
