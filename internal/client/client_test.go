@@ -135,6 +135,70 @@ func TestRoundTrip(t *testing.T) {
 	assert.Equal(t, "/filed", restored.Path)
 }
 
+func TestDocumentsReturnsRecursivePageWithVaultAuthority(t *testing.T) {
+	c, s := newClient(t, serverKey)
+	directory, err := s.Mkdir(t.Context(), s.RootID(), "finance")
+	require.NoError(t, err)
+	_, err = s.CreateFile(t.Context(), directory.ID, "report.txt", strings.Repeat("d", 64), 7,
+		"text/plain")
+	require.NoError(t, err)
+
+	page, err := c.Documents(t.Context(), s.VaultID(), directory.ID, 20, 0)
+	require.NoError(t, err)
+	assert.Equal(t, s.VaultID(), page.VaultID)
+	assert.Equal(t, directory.ID, page.UnderNodeID)
+	assert.Equal(t, "/finance", page.Directory.Path)
+	assert.Equal(t, 1, page.NextOffset)
+	assert.False(t, page.Truncated)
+	require.Len(t, page.Items, 1)
+	assert.Equal(t, "/finance/report.txt", page.Items[0].Path)
+
+	_, err = c.Documents(t.Context(), "bad", directory.ID, 20, 0)
+	require.ErrorContains(t, err, "canonical UUIDv4")
+	_, err = c.Documents(t.Context(), s.VaultID(), directory.ID, 0, 0)
+	require.ErrorContains(t, err, "between 1 and 5000")
+	_, err = c.Documents(t.Context(), "", directory.ID, 20, 0)
+	require.ErrorContains(t, err, "must be supplied together")
+	_, err = c.Documents(t.Context(), s.VaultID(), 0, 20, 0)
+	require.ErrorContains(t, err, "must be supplied together")
+
+	beyond, err := c.Documents(t.Context(), s.VaultID(), directory.ID, 20, 9)
+	require.NoError(t, err)
+	assert.Empty(t, beyond.Items)
+	assert.Equal(t, 9, beyond.NextOffset)
+	assert.False(t, beyond.Truncated)
+}
+
+func TestSearchEvidenceScopesByVaultAndDirectory(t *testing.T) {
+	c, s := newClient(t, serverKey)
+	directory, err := s.Mkdir(t.Context(), s.RootID(), "finance")
+	require.NoError(t, err)
+	node, err := s.CreateFile(t.Context(), directory.ID, "quarterly-report.pdf",
+		strings.Repeat("e", 64), 7, "application/pdf")
+	require.NoError(t, err)
+	_, err = s.CreateFile(t.Context(), s.RootID(), "quarterly-outside.pdf",
+		strings.Repeat("f", 64), 8, "application/pdf")
+	require.NoError(t, err)
+
+	report, err := c.SearchEvidenceWithOptions(t.Context(), "quarterly", 20,
+		client.EvidenceSearchOptions{VaultID: s.VaultID(), UnderNodeID: directory.ID})
+	require.NoError(t, err)
+	assert.Equal(t, s.VaultID(), report.VaultID)
+	assert.Equal(t, directory.ID, report.UnderNodeID)
+	require.Len(t, report.Hits, 1)
+	assert.Equal(t, node.ID, report.Hits[0].Node.ID)
+
+	_, err = c.SearchEvidenceWithOptions(t.Context(), "quarterly", 20,
+		client.EvidenceSearchOptions{VaultID: "bad", UnderNodeID: directory.ID})
+	require.ErrorContains(t, err, "canonical UUIDv4")
+	_, err = c.SearchEvidenceWithOptions(t.Context(), "quarterly", 20,
+		client.EvidenceSearchOptions{UnderNodeID: directory.ID})
+	require.ErrorContains(t, err, "must be supplied together")
+	_, err = c.SearchEvidenceWithOptions(t.Context(), "quarterly", 20,
+		client.EvidenceSearchOptions{VaultID: s.VaultID()})
+	require.ErrorContains(t, err, "must be supplied together")
+}
+
 func TestProvenanceReturnsStableOriginAuthority(t *testing.T) {
 	c, s := newClient(t, serverKey)
 	run, err := s.BeginIngest(t.Context(), "watch", "agent-sessions")
@@ -195,7 +259,7 @@ func TestSearchWithOptionsUsesStableTagIdentity(t *testing.T) {
 	require.NoError(t, err)
 
 	report, err := c.SearchWithOptions(
-		ctx, "insurance", 10, client.SearchOptions{
+		ctx, "insurance", 10, 0, client.SearchOptions{
 			TagID: tag.ID, MIMEType: "APPLICATION/PDF", UnderNodeID: directory.ID,
 			ModifiedSince: "2000-01-01T00:00:00-05:00", ModifiedBefore: "2100-01-01T00:00:00Z",
 		},
@@ -209,28 +273,106 @@ func TestSearchWithOptionsUsesStableTagIdentity(t *testing.T) {
 	require.Len(t, report.Hits, 1)
 	assert.Equal(t, tagged.ID, report.Hits[0].Node.ID)
 
-	filterReport, err := c.SearchWithOptions(ctx, "", 10, client.SearchOptions{TagID: tag.ID})
+	filterReport, err := c.SearchWithOptions(ctx, "", 10, 0, client.SearchOptions{TagID: tag.ID})
 	require.NoError(t, err)
 	require.Len(t, filterReport.Hits, 1)
 	assert.Equal(t, "filter", filterReport.Hits[0].Match)
-	_, err = c.SearchWithOptions(ctx, "", 10, client.SearchOptions{})
+	_, err = c.SearchWithOptions(ctx, "", 10, 0, client.SearchOptions{})
 	require.ErrorIs(t, err, store.ErrSearchQueryRequired)
 	code, ok := client.ProblemCode(err)
 	require.True(t, ok)
 	assert.Equal(t, "search_query_required", code)
 
-	_, err = c.SearchWithOptions(ctx, "insurance", 10, client.SearchOptions{TagID: "bad"})
+	_, err = c.SearchWithOptions(ctx, "insurance", 10, 0, client.SearchOptions{TagID: "bad"})
 	require.ErrorContains(t, err, "canonical UUIDv4")
-	_, err = c.SearchWithOptions(ctx, "insurance", 10, client.SearchOptions{
+	_, err = c.SearchWithOptions(ctx, "insurance", 10, 0, client.SearchOptions{
 		MIMEType: "application/pdf; version=1",
 	})
 	require.ErrorContains(t, err, "must not include parameters")
-	_, err = c.SearchWithOptions(ctx, "insurance", 10, client.SearchOptions{UnderNodeID: -1})
+	_, err = c.SearchWithOptions(ctx, "insurance", 10, 0, client.SearchOptions{UnderNodeID: -1})
 	require.ErrorContains(t, err, "directory node ID must be positive")
-	_, err = c.SearchWithOptions(ctx, "insurance", 10, client.SearchOptions{
+	_, err = c.SearchWithOptions(ctx, "insurance", 10, 0, client.SearchOptions{
 		ModifiedSince: "2100-01-01T00:00:00Z", ModifiedBefore: "2000-01-01T00:00:00Z",
 	})
 	require.ErrorContains(t, err, "must be earlier")
+}
+
+func TestSearchClientsForwardAndValidatePagination(t *testing.T) {
+	const vaultID = "22222222-2222-4222-8222-222222222222"
+	offsets := make(chan string, 2)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		offsets <- r.URL.Query().Get("offset")
+		switch r.URL.Path {
+		case "/api/v1/search":
+			_ = json.MarshalWrite(w, api.SearchReport{
+				Hits: []api.SearchHit{}, Limit: 3, Offset: 7, NextOffset: 7,
+			})
+		case "/api/v1/evidence/search":
+			_ = json.MarshalWrite(w, api.EvidenceSearchReport{
+				Mode: "lexical", VaultID: vaultID, Hits: []api.EvidenceSearchHit{}, Limit: 3,
+				Offset: 7, NextOffset: 7,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(ts.Close)
+	c := client.New(ts.URL, "key")
+
+	search, err := c.SearchWithOptions(t.Context(), "insurance", 3, 7, client.SearchOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, 7, search.Offset)
+	assert.Equal(t, 7, search.NextOffset)
+	evidence, err := c.SearchEvidence(t.Context(), "insurance", 3, 7)
+	require.NoError(t, err)
+	assert.Equal(t, 7, evidence.Offset)
+	assert.Equal(t, 7, evidence.NextOffset)
+	assert.Equal(t, "7", <-offsets)
+	assert.Equal(t, "7", <-offsets)
+
+	dead := client.New("http://127.0.0.1:1", "key")
+	_, err = dead.SearchWithOptions(t.Context(), "insurance", 3, -1, client.SearchOptions{})
+	require.ErrorContains(t, err, "offset must not be negative")
+	_, err = dead.SearchEvidence(t.Context(), "insurance", 3, -1)
+	require.ErrorContains(t, err, "offset must not be negative")
+}
+
+func TestSearchClientsRejectMalformedPaginationAuthority(t *testing.T) {
+	const vaultID = "22222222-2222-4222-8222-222222222222"
+	searchCases := []struct {
+		name   string
+		report api.SearchReport
+	}{
+		{name: "wrong limit", report: api.SearchReport{Limit: 2, Offset: 4, NextOffset: 4}},
+		{name: "wrong offset", report: api.SearchReport{Limit: 3, Offset: 3, NextOffset: 3}},
+		{name: "wrong next offset", report: api.SearchReport{Limit: 3, Offset: 4, NextOffset: 5}},
+		{name: "empty truncated", report: api.SearchReport{Limit: 3, Offset: 4, NextOffset: 4, Truncated: true}},
+		{name: "too many hits", report: api.SearchReport{Limit: 3, Offset: 4, NextOffset: 8, Hits: make([]api.SearchHit, 4)}},
+	}
+	for _, test := range searchCases {
+		t.Run("search "+test.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.MarshalWrite(w, test.report)
+			}))
+			t.Cleanup(ts.Close)
+			_, err := client.New(ts.URL, "key").SearchWithOptions(
+				t.Context(), "insurance", 3, 4, client.SearchOptions{},
+			)
+			require.ErrorContains(t, err, "inconsistent pagination authority")
+		})
+	}
+
+	for _, report := range []api.EvidenceSearchReport{
+		{Mode: "lexical", VaultID: vaultID, Limit: 3, Offset: 4, NextOffset: 5},
+		{Mode: "lexical", VaultID: vaultID, Limit: 3, Offset: 4, NextOffset: 4, Truncated: true},
+	} {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.MarshalWrite(w, report)
+		}))
+		_, err := client.New(ts.URL, "key").SearchEvidence(t.Context(), "insurance", 3, 4)
+		ts.Close()
+		require.ErrorContains(t, err, "inconsistent pagination authority")
+	}
 }
 
 func TestSearchEvidenceUsesStableFilterAuthority(t *testing.T) {
@@ -240,23 +382,17 @@ func TestSearchEvidenceUsesStableFilterAuthority(t *testing.T) {
 	require.NoError(t, err)
 	directory, err := s.Mkdir(ctx, s.RootID(), "policies")
 	require.NoError(t, err)
-	old, err := s.CreateFile(ctx, directory.ID, "insurance-old.pdf",
-		strings.Repeat("1", 64), 1, "application/pdf")
+	old, err := s.CreateFile(ctx, directory.ID, "insurance-old.pdf", strings.Repeat("1", 64), 1, "application/pdf")
 	require.NoError(t, err)
-	matching, err := s.CreateFile(ctx, directory.ID, "insurance-alpha.pdf",
-		strings.Repeat("2", 64), 1, "application/pdf")
+	matching, err := s.CreateFile(ctx, directory.ID, "insurance-alpha.pdf", strings.Repeat("2", 64), 1, "application/pdf")
 	require.NoError(t, err)
-	second, err := s.CreateFile(ctx, directory.ID, "insurance-beta.pdf",
-		strings.Repeat("3", 64), 1, "application/pdf")
+	second, err := s.CreateFile(ctx, directory.ID, "insurance-beta.pdf", strings.Repeat("3", 64), 1, "application/pdf")
 	require.NoError(t, err)
-	wrongMIME, err := s.CreateFile(ctx, directory.ID, "insurance-text.txt",
-		strings.Repeat("4", 64), 1, "text/plain")
+	wrongMIME, err := s.CreateFile(ctx, directory.ID, "insurance-text.txt", strings.Repeat("4", 64), 1, "text/plain")
 	require.NoError(t, err)
-	outside, err := s.CreateFile(ctx, s.RootID(), "insurance-outside.pdf",
-		strings.Repeat("5", 64), 1, "application/pdf")
+	outside, err := s.CreateFile(ctx, s.RootID(), "insurance-outside.pdf", strings.Repeat("5", 64), 1, "application/pdf")
 	require.NoError(t, err)
-	late, err := s.CreateFile(ctx, directory.ID, "insurance-late.pdf",
-		strings.Repeat("6", 64), 1, "application/pdf")
+	late, err := s.CreateFile(ctx, directory.ID, "insurance-late.pdf", strings.Repeat("6", 64), 1, "application/pdf")
 	require.NoError(t, err)
 
 	assign := func(node store.Node) store.Node {
@@ -268,8 +404,7 @@ func TestSearchEvidenceUsesStableFilterAuthority(t *testing.T) {
 	}
 	old = assign(old)
 	matching = assign(matching)
-	untagged, err := s.CreateFile(ctx, directory.ID, "insurance-untagged.pdf",
-		strings.Repeat("7", 64), 1, "application/pdf")
+	untagged, err := s.CreateFile(ctx, directory.ID, "insurance-untagged.pdf", strings.Repeat("7", 64), 1, "application/pdf")
 	require.NoError(t, err)
 	time.Sleep(time.Microsecond)
 	second = assign(second)
@@ -283,12 +418,12 @@ func TestSearchEvidenceUsesStableFilterAuthority(t *testing.T) {
 		require.GreaterOrEqual(t, node.ModifiedAt, matching.ModifiedAt)
 		require.Less(t, node.ModifiedAt, late.ModifiedAt)
 	}
-	require.NoError(t, err)
 
-	report, err := c.SearchEvidence(ctx, "insurance", 1, client.SearchOptions{
-		TagID: tag.ID, MIMEType: "APPLICATION/PDF", UnderNodeID: directory.ID,
+	options := client.EvidenceSearchOptions{
+		VaultID: s.VaultID(), UnderNodeID: directory.ID, TagID: tag.ID, MIMEType: "APPLICATION/PDF",
 		ModifiedSince: matching.ModifiedAt, ModifiedBefore: late.ModifiedAt,
-	})
+	}
+	report, err := c.SearchEvidenceWithOptions(ctx, "insurance", 1, options)
 	require.NoError(t, err)
 	assert.Equal(t, tag.ID, report.TagID)
 	assert.Equal(t, "application/pdf", report.MIMEType)
@@ -299,21 +434,16 @@ func TestSearchEvidenceUsesStableFilterAuthority(t *testing.T) {
 	require.Len(t, report.Hits, 1)
 	assert.Equal(t, matching.ID, report.Hits[0].Node.ID)
 
-	empty, err := c.SearchEvidence(ctx, "missing-term", 10, client.SearchOptions{
-		TagID: tag.ID, MIMEType: "application/pdf", UnderNodeID: directory.ID,
-		ModifiedSince: matching.ModifiedAt, ModifiedBefore: late.ModifiedAt,
-	})
+	empty, err := c.SearchEvidenceWithOptions(ctx, "missing-term", 10, options)
 	require.NoError(t, err)
 	assert.Empty(t, empty.Hits)
 	assert.False(t, empty.Truncated)
 	assert.Equal(t, tag.ID, empty.TagID)
-	assert.Equal(t, matching.ModifiedAt, empty.ModifiedSince)
-	assert.Equal(t, late.ModifiedAt, empty.ModifiedBefore)
 
-	_, err = c.SearchEvidence(ctx, "insurance", 10, client.SearchOptions{TagID: "bad"})
+	_, err = c.SearchEvidenceWithOptions(ctx, "insurance", 10, client.EvidenceSearchOptions{TagID: "bad"})
 	require.ErrorContains(t, err, "filters are invalid")
 	require.NotContains(t, err.Error(), "bad")
-	_, err = c.SearchEvidence(ctx, "insurance", 10, client.SearchOptions{
+	_, err = c.SearchEvidenceWithOptions(ctx, "insurance", 10, client.EvidenceSearchOptions{
 		ModifiedSince: "2100-01-01T00:00:00Z", ModifiedBefore: "2000-01-01T00:00:00Z",
 	})
 	require.ErrorContains(t, err, "filters are invalid")
@@ -321,17 +451,18 @@ func TestSearchEvidenceUsesStableFilterAuthority(t *testing.T) {
 }
 
 func TestSearchEvidenceRejectsMissingFilterAuthority(t *testing.T) {
+	const vaultID = "22222222-2222-4222-8222-222222222222"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.MarshalWrite(w, api.EvidenceSearchReport{
-			Mode: "lexical", Hits: []api.EvidenceSearchHit{}, Limit: 10,
+			Mode: "lexical", VaultID: vaultID, Hits: []api.EvidenceSearchHit{}, Limit: 10,
 		})
 	}))
 	t.Cleanup(server.Close)
 
-	_, err := client.New(server.URL, "key").SearchEvidence(
+	_, err := client.New(server.URL, "key").SearchEvidenceWithOptions(
 		t.Context(), "insurance", 10,
-		client.SearchOptions{TagID: "11111111-1111-4111-8111-111111111111"},
+		client.EvidenceSearchOptions{TagID: "11111111-1111-4111-8111-111111111111"},
 	)
 	require.ErrorContains(t, err, "inconsistent filter authority")
 }
@@ -342,33 +473,29 @@ func TestSearchEvidenceErrorsDoNotExposePrivateInputs(t *testing.T) {
 		privateTag   = "11111111-1111-4111-8111-111111111111"
 		privateSince = "2026-01-02T03:04:05Z"
 	)
-	opts := client.SearchOptions{TagID: privateTag, ModifiedSince: privateSince}
+	opts := client.EvidenceSearchOptions{TagID: privateTag, ModifiedSince: privateSince}
 
-	t.Run("transport", func(t *testing.T) {
-		server := httptest.NewServer(http.NotFoundHandler())
-		baseURL := server.URL
-		server.Close()
-
-		_, err := client.New(baseURL, "key").SearchEvidence(t.Context(), privateQuery, 10, opts)
-		require.Error(t, err)
-		assert.NotContains(t, err.Error(), privateQuery)
-		assert.NotContains(t, err.Error(), privateTag)
-		assert.NotContains(t, err.Error(), privateSince)
-	})
-
-	t.Run("decode", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	for name, handler := range map[string]http.Handler{
+		"transport": http.NotFoundHandler(),
+		"decode": http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"mode":`))
-		}))
-		t.Cleanup(server.Close)
-
-		_, err := client.New(server.URL, "key").SearchEvidence(t.Context(), privateQuery, 10, opts)
-		require.Error(t, err)
-		assert.NotContains(t, err.Error(), privateQuery)
-		assert.NotContains(t, err.Error(), privateTag)
-		assert.NotContains(t, err.Error(), privateSince)
-	})
+		}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(handler)
+			if name == "transport" {
+				server.Close()
+			} else {
+				t.Cleanup(server.Close)
+			}
+			_, err := client.New(server.URL, "key").SearchEvidenceWithOptions(t.Context(), privateQuery, 10, opts)
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), privateQuery)
+			assert.NotContains(t, err.Error(), privateTag)
+			assert.NotContains(t, err.Error(), privateSince)
+		})
+	}
 }
 
 func TestMoveToPathValidatesRequestBeforeTransport(t *testing.T) {

@@ -100,6 +100,7 @@ tar_excludes=(
   --exclude './zensical-public-docs.*'
   --exclude './.zensical-build.*'
   --exclude './superpowers'
+  --exclude './plans'
   --exclude './README.md'
   --exclude './pyproject.toml'
   --exclude './uv.lock'

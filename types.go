@@ -242,6 +242,31 @@ type ChildrenPage struct {
 	Offset int    `json:"offset"`
 }
 
+// DocumentOptions selects one bounded recursive page of live file nodes.
+// A zero Limit uses DefaultDocumentLimit. Offset must not be negative.
+type DocumentOptions struct {
+	Limit  int
+	Offset int
+}
+
+// DocumentItem binds a current node projection to its canonical live path.
+type DocumentItem struct {
+	Node
+
+	Path string `json:"path"`
+}
+
+// DocumentPage is one canonical-path-ordered recursive file listing.
+type DocumentPage struct {
+	Directory  DocumentItem   `json:"directory"`
+	Items      []DocumentItem `json:"items"`
+	Total      int            `json:"total"`
+	Limit      int            `json:"limit"`
+	Offset     int            `json:"offset"`
+	NextOffset int            `json:"next_offset"`
+	Truncated  bool           `json:"truncated"`
+}
+
 const (
 	DefaultVersionsLimit = 100
 	MaxVersionsLimit     = 1000

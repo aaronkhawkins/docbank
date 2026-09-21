@@ -17,12 +17,21 @@ docbank ls /taxes          # one directory, with stable selectors, sizes, timest
 docbank tree /taxes        # whole subtree, with id:N selectors in brackets
 docbank cat /taxes/w2.pdf  # stream file bytes to stdout
 docbank get /taxes/w2.pdf ./w2.pdf  # verify, then atomically publish a local file
+docbank list-documents /taxes       # bounded recursive file inventory
 ```
 
 Use `ls --json` for a directory envelope containing the resolved directory
 and its ordered children. `tree --json` returns the root plus a flat,
 deterministic pre-order list whose entries carry absolute paths and depths;
 this avoids parsing indentation when a script needs to walk a subtree.
+
+Use `list-documents` when a script or agent needs every current file rather
+than directory entries. It returns canonical-path-ordered offset pages with
+stable node IDs, current version IDs, and a vault-qualified directory scope.
+It excludes directories, trash, and retained non-current versions. This is
+inventory rather than lexical search; use `search` to match names or extracted
+text. Continue with `next_offset` only while `truncated` is true, and restart
+paging after concurrent tree changes.
 
 Node selectors appear everywhere deliberately. A path is a live coordinate
 that can change during reorganization; `id:42` continues to name the same node.
