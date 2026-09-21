@@ -307,6 +307,42 @@ func registerReadRoutes(api huma.API, d Deps) {
 		return out, nil
 	})
 
+	type documentsPage struct{ Body DocumentPage }
+	huma.Register(api, huma.Operation{
+		OperationID: "listDocuments", Method: http.MethodGet, Path: "/api/v1/documents",
+		Summary: "List live files recursively by canonical path, paginated",
+		Description: "This operation inventories current live files at vault root or below one " +
+			"live directory. It is distinct from immediate-child browsing and lexical search. " +
+			"Offset pages reflect current authority at request time; restart at offset zero to " +
+			"reconcile after tree changes.",
+	}, func(ctx context.Context, in *struct {
+		VaultID     string `query:"vault_id" pattern:"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"`
+		UnderNodeID int64  `query:"under_node_id" minimum:"1"`
+		Limit       int    `query:"limit" default:"500" minimum:"1" maximum:"5000"`
+		Offset      int    `query:"offset" default:"0" minimum:"0"`
+	}) (*documentsPage, error) {
+		if in.VaultID != "" && in.VaultID != d.Store.VaultID() {
+			return nil, NewError(http.StatusConflict, "vault_mismatch",
+				"document scope belongs to a different vault")
+		}
+		page, err := d.Store.DocumentPage(ctx, in.UnderNodeID, in.Limit, in.Offset)
+		if err != nil {
+			return nil, FromStoreError(err)
+		}
+		out := &documentsPage{Body: DocumentPage{
+			VaultID: d.Store.VaultID(), UnderNodeID: page.Directory.Node.ID,
+			Directory: fromStoreNode(page.Directory.Node), Items: []Node{},
+			Total: page.Total, Limit: in.Limit, Offset: in.Offset,
+		}}
+		out.Body.Directory.Path = page.Directory.Path
+		for _, document := range page.Documents {
+			item := fromStoreNode(document.Node)
+			item.Path = document.Path
+			out.Body.Items = append(out.Body.Items, item)
+		}
+		return out, nil
+	})
+
 	huma.Register(api, huma.Operation{
 		OperationID: "getNodeContent", Method: http.MethodGet, Path: "/api/v1/nodes/{id}/content",
 		Summary: "Stream a file's bytes",

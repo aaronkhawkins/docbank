@@ -29,6 +29,7 @@ Endpoints are filesystem-shaped, under `/api/v1`:
 | `GET /nodes/{id}` | stat by id (live or trashed) | Implemented |
 | `GET /path?path=/a/b` | stat by virtual path | Implemented |
 | `GET /nodes/{id}/children` | list a directory, paginated (`limit`/`offset`) | Implemented |
+| `GET /documents?vault_id=&under_node_id=&limit=&offset=` | inventory current live files recursively at root or below one live directory, in canonical-path order | Implemented |
 | `GET /nodes/{id}/content` | stream document bytes with catalog identity and a computed digest trailer | Implemented |
 | `PUT /nodes/{id}/content` | replace raw content under revision, size, and digest preconditions — see [addendum](#addendum-put-nodesidcontent) | Implemented |
 | `POST /nodes/{id}/revert` | create a new head from a prior version of the same file | Implemented |
@@ -106,6 +107,16 @@ continuation pages to the active build selected by the first response.
 current canonical path—and the requested child page to one read transaction.
 Refresh clients therefore do not combine an earlier directory name with a
 later child listing.
+
+`GET /documents` is the bounded recursive inventory surface. With no scope it
+starts at the vault root; `under_node_id` selects one live directory and
+`vault_id` can bind that previously resolved node identity to this vault.
+Responses echo both values, the resolved directory, total count, and an
+offset page of current file nodes with canonical paths and current version
+identity. Ordering is canonical path, then stable node ID. Pages describe the
+tree at request time, so clients should restart at offset zero after moves,
+renames, trash, restore, or concurrent imports. This is browsing, not search:
+there is no query syntax, globbing, or extracted-text matching.
 
 IDs are canonical everywhere: every response carries them, and mutating
 endpoints address nodes by ID so a rename can't strand a concurrent

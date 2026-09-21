@@ -442,6 +442,55 @@ func (c *Client) ChildrenPage(
 	return page, nil
 }
 
+// Documents returns one bounded canonical-path-ordered recursive file page.
+// vaultID may be empty for a connection-local request; supplying it makes a
+// previously resolved scope fail closed if the client targets another vault.
+func (c *Client) Documents(
+	ctx context.Context, vaultID string, underNodeID int64, limit, offset int,
+) (api.DocumentPage, error) {
+	var page api.DocumentPage
+	if vaultID != "" && !validUUIDv4(vaultID) {
+		return page, errors.New("document scope vault ID must be a canonical UUIDv4")
+	}
+	if underNodeID < 0 {
+		return page, errors.New("document scope node ID must be positive")
+	}
+	if limit < 1 || limit > 5000 {
+		return page, errors.New("document page limit must be between 1 and 5000")
+	}
+	if offset < 0 {
+		return page, errors.New("document page offset must not be negative")
+	}
+	query := url.Values{}
+	query.Set("limit", strconv.Itoa(limit))
+	query.Set("offset", strconv.Itoa(offset))
+	if vaultID != "" {
+		query.Set("vault_id", vaultID)
+	}
+	if underNodeID != 0 {
+		query.Set("under_node_id", strconv.FormatInt(underNodeID, 10))
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/documents?"+query.Encode(), nil, nil, &page); err != nil {
+		return api.DocumentPage{}, err
+	}
+	if !validUUIDv4(page.VaultID) || (vaultID != "" && page.VaultID != vaultID) ||
+		page.UnderNodeID < 1 || page.Directory.ID != page.UnderNodeID ||
+		page.Directory.Kind != "dir" || page.Directory.TrashedAt != "" ||
+		!strings.HasPrefix(page.Directory.Path, "/") || page.Total < 0 ||
+		page.Limit != limit || page.Offset != offset || len(page.Items) > limit ||
+		(len(page.Items) == 0 && offset < page.Total) ||
+		(len(page.Items) > 0 && offset+len(page.Items) > page.Total) {
+		return api.DocumentPage{}, errors.New("document response has inconsistent pagination authority")
+	}
+	for _, item := range page.Items {
+		if item.ID < 1 || item.Kind != "file" || item.TrashedAt != "" ||
+			!validUUIDv4(item.CurrentVersionID) || !strings.HasPrefix(item.Path, "/") {
+			return api.DocumentPage{}, errors.New("document response has invalid item authority")
+		}
+	}
+	return page, nil
+}
+
 func (c *Client) Content(ctx context.Context, id int64) (*ContentStream, error) {
 	return c.content(ctx, fmt.Sprintf("/api/v1/nodes/%d/content", id),
 		fmt.Sprintf("content of node %d", id))

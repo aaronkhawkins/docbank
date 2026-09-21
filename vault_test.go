@@ -121,8 +121,8 @@ func TestVaultDocumentsPagesCurrentRecursiveFiles(t *testing.T) {
 	second, err := vault.Documents(t.Context(), finance.ID, DocumentOptions{Limit: 1, Offset: 1})
 	require.NoError(t, err)
 	require.Len(t, second.Items, 1)
-	assert.Equal(t, one.Node.ID, second.Items[0].Node.ID)
-	assert.Equal(t, one.Version.ID, second.Items[0].Node.CurrentVersionID)
+	assert.Equal(t, one.Node.ID, second.Items[0].ID)
+	assert.Equal(t, one.Version.ID, second.Items[0].CurrentVersionID)
 }
 
 func TestVaultSourceMetadataReturnsExactVersionEvidence(t *testing.T) {

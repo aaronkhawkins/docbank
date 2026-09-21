@@ -135,6 +135,28 @@ func TestRoundTrip(t *testing.T) {
 	assert.Equal(t, "/filed", restored.Path)
 }
 
+func TestDocumentsReturnsRecursivePageWithVaultAuthority(t *testing.T) {
+	c, s := newClient(t, serverKey)
+	directory, err := s.Mkdir(t.Context(), s.RootID(), "finance")
+	require.NoError(t, err)
+	_, err = s.CreateFile(t.Context(), directory.ID, "report.txt", strings.Repeat("d", 64), 7,
+		"text/plain")
+	require.NoError(t, err)
+
+	page, err := c.Documents(t.Context(), s.VaultID(), directory.ID, 20, 0)
+	require.NoError(t, err)
+	assert.Equal(t, s.VaultID(), page.VaultID)
+	assert.Equal(t, directory.ID, page.UnderNodeID)
+	assert.Equal(t, "/finance", page.Directory.Path)
+	require.Len(t, page.Items, 1)
+	assert.Equal(t, "/finance/report.txt", page.Items[0].Path)
+
+	_, err = c.Documents(t.Context(), "bad", directory.ID, 20, 0)
+	require.ErrorContains(t, err, "canonical UUIDv4")
+	_, err = c.Documents(t.Context(), s.VaultID(), directory.ID, 0, 0)
+	require.ErrorContains(t, err, "between 1 and 5000")
+}
+
 func TestProvenanceReturnsStableOriginAuthority(t *testing.T) {
 	c, s := newClient(t, serverKey)
 	run, err := s.BeginIngest(t.Context(), "watch", "agent-sessions")

@@ -48,6 +48,17 @@ type NodePage struct {
 	Offset    int    `json:"offset"`
 }
 
+// DocumentPage is one bounded recursive listing of current live files.
+type DocumentPage struct {
+	VaultID     string `json:"vault_id" format:"uuid"`
+	UnderNodeID int64  `json:"under_node_id" minimum:"1"`
+	Directory   Node   `json:"directory"`
+	Items       []Node `json:"items"`
+	Total       int    `json:"total"`
+	Limit       int    `json:"limit"`
+	Offset      int    `json:"offset"`
+}
+
 // TrashPage is one newest-first page of independently restorable trash roots.
 type TrashPage struct {
 	Items  []Node `json:"items"`

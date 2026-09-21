@@ -252,6 +252,7 @@ type DocumentOptions struct {
 // DocumentItem binds a current node projection to its canonical live path.
 type DocumentItem struct {
 	Node
+
 	Path string `json:"path"`
 }
 
