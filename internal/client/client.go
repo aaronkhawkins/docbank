@@ -324,17 +324,22 @@ func (c *Client) do(ctx context.Context, method, path string, hdr map[string]str
 func (c *Client) doWithHeaders(
 	ctx context.Context, method, path string, hdr map[string]string, in, out any,
 ) (http.Header, error) {
+	diagnosticTarget := path
+	if queryStart := strings.IndexByte(diagnosticTarget, '?'); queryStart >= 0 {
+		diagnosticTarget = diagnosticTarget[:queryStart]
+	}
 	var body io.Reader
 	if in != nil {
 		b, err := marshalJSONRequest(in)
 		if err != nil {
-			return nil, fmt.Errorf("encoding %s %s request: %w", method, path, err)
+			return nil, fmt.Errorf("encoding %s %s request: %w", method, diagnosticTarget, err)
 		}
 		body = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
 	if err != nil {
-		return nil, fmt.Errorf("building %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("building %s %s: %w", method, diagnosticTarget,
+			redactRequestURL(err, diagnosticTarget))
 	}
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -348,7 +353,8 @@ func (c *Client) doWithHeaders(
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		return nil, &transportError{err: fmt.Errorf(
-			"calling daemon (%s %s): %w", method, path, err,
+			"calling daemon (%s %s): %w", method, diagnosticTarget,
+			redactRequestURL(err, diagnosticTarget),
 		)}
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -361,10 +367,20 @@ func (c *Client) doWithHeaders(
 	}
 	if err := json.UnmarshalRead(resp.Body, out); err != nil {
 		return nil, &responseDecodeError{err: fmt.Errorf(
-			"decoding %s %s response: %w", method, path, err,
+			"decoding %s %s response: %w", method, diagnosticTarget, err,
 		)}
 	}
 	return resp.Header.Clone(), nil
+}
+
+func redactRequestURL(err error, diagnosticTarget string) error {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return err
+	}
+	redacted := *urlErr
+	redacted.URL = diagnosticTarget
+	return &redacted
 }
 
 // marshalJSONRequest is the shared JSON v2 boundary for typed request bodies,
@@ -892,9 +908,13 @@ func (c *Client) SearchEvidence(
 
 // EvidenceSearchOptions binds an optional directory scope to one vault.
 type EvidenceSearchOptions struct {
-	VaultID     string
-	UnderNodeID int64
-	Offset      int
+	VaultID        string
+	UnderNodeID    int64
+	Offset         int
+	TagID          string
+	MIMEType       string
+	ModifiedSince  string
+	ModifiedBefore string
 }
 
 // SearchEvidenceWithOptions returns lexical evidence, optionally restricted
@@ -903,8 +923,8 @@ func (c *Client) SearchEvidenceWithOptions(
 	ctx context.Context, query string, limit int, opts EvidenceSearchOptions,
 ) (api.EvidenceSearchReport, error) {
 	var report api.EvidenceSearchReport
-	if strings.TrimSpace(query) == "" {
-		return report, errors.New("evidence search query must not be empty")
+	if strings.TrimSpace(query) == "" || utf8.RuneCountInString(query) > 4096 {
+		return report, errors.New("evidence search query must be between 1 and 4096 characters")
 	}
 	if limit < 1 || limit > 100 {
 		return report, errors.New("evidence search limit must be between 1 and 100")
@@ -921,6 +941,19 @@ func (c *Client) SearchEvidenceWithOptions(
 	if opts.Offset < 0 {
 		return report, errors.New("evidence search offset must not be negative")
 	}
+	if opts.TagID != "" && !validUUIDv4(opts.TagID) {
+		return report, errors.New("evidence search filters are invalid")
+	}
+	mimeType, err := store.NormalizeSearchMIMEType(opts.MIMEType)
+	if err != nil {
+		return report, errors.New("evidence search filters are invalid")
+	}
+	modifiedSince, modifiedBefore, err := store.NormalizeSearchTimeBounds(
+		opts.ModifiedSince, opts.ModifiedBefore,
+	)
+	if err != nil {
+		return report, errors.New("evidence search filters are invalid")
+	}
 	queryValues := url.Values{}
 	queryValues.Set("q", query)
 	queryValues.Set("limit", strconv.Itoa(limit))
@@ -930,6 +963,18 @@ func (c *Client) SearchEvidenceWithOptions(
 	}
 	if opts.UnderNodeID != 0 {
 		queryValues.Set("under_node_id", strconv.FormatInt(opts.UnderNodeID, 10))
+	}
+	if opts.TagID != "" {
+		queryValues.Set("tag_id", opts.TagID)
+	}
+	if mimeType != "" {
+		queryValues.Set("mime_type", mimeType)
+	}
+	if modifiedSince != "" {
+		queryValues.Set("modified_since", modifiedSince)
+	}
+	if modifiedBefore != "" {
+		queryValues.Set("modified_before", modifiedBefore)
 	}
 	path := "/api/v1/evidence/search?" + queryValues.Encode()
 	if err := c.do(ctx, http.MethodGet, path, nil, nil, &report); err != nil {
@@ -943,6 +988,10 @@ func (c *Client) SearchEvidenceWithOptions(
 	if !validSearchPagination(limit, opts.Offset, report.Limit, report.Offset, report.NextOffset,
 		len(report.Hits), report.Truncated) {
 		return api.EvidenceSearchReport{}, errors.New("evidence search response has inconsistent pagination authority")
+	}
+	if report.TagID != opts.TagID || report.MIMEType != mimeType ||
+		report.ModifiedSince != modifiedSince || report.ModifiedBefore != modifiedBefore {
+		return api.EvidenceSearchReport{}, errors.New("evidence search response has inconsistent filter authority")
 	}
 	for _, hit := range report.Hits {
 		if hit.Node.ID < 1 || !validUUIDv4(hit.Node.CurrentVersionID) ||
