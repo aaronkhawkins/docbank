@@ -4,6 +4,7 @@ package vectorindex
 
 import (
 	"bytes"
+	"container/heap"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -12,7 +13,6 @@ import (
 	"io"
 	"math"
 	"slices"
-	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -292,7 +292,7 @@ func (generation *Generation) Search(query []float32, k int) ([]Neighbor, error)
 		return nil, fmt.Errorf("vector index query: %w", err)
 	}
 
-	neighbors := make([]Neighbor, len(generation.rows))
+	neighbors := &neighborHeap{metric: generation.metric, items: make([]Neighbor, 0, k)}
 	for index, row := range generation.rows {
 		neighbor := Neighbor{RowIdentity: row}
 		switch generation.metric {
@@ -303,19 +303,59 @@ func (generation *Generation) Search(query []float32, k int) ([]Neighbor, error)
 		case document.VectorMetricL2:
 			neighbor.Distance = euclidean(query, generation.vector(index))
 		}
-		neighbors[index] = neighbor
-	}
-	sort.Slice(neighbors, func(left, right int) bool {
-		if generation.metric == document.VectorMetricL2 {
-			if neighbors[left].Distance != neighbors[right].Distance {
-				return neighbors[left].Distance < neighbors[right].Distance
-			}
-		} else if neighbors[left].Score != neighbors[right].Score {
-			return neighbors[left].Score > neighbors[right].Score
+		if neighbors.Len() < k {
+			heap.Push(neighbors, neighbor)
+		} else if betterNeighbor(neighbor, neighbors.items[0], generation.metric) {
+			neighbors.items[0] = neighbor
+			heap.Fix(neighbors, 0)
 		}
-		return compareIdentity(neighbors[left].RowIdentity, neighbors[right].RowIdentity) < 0
-	})
-	return append([]Neighbor(nil), neighbors[:k]...), nil
+	}
+	result := make([]Neighbor, k)
+	for index := k - 1; index >= 0; index-- {
+		neighbor, ok := heap.Pop(neighbors).(Neighbor)
+		if !ok {
+			return nil, errors.New("vector index neighbor heap contains an invalid value")
+		}
+		result[index] = neighbor
+	}
+	return result, nil
+}
+
+type neighborHeap struct {
+	metric string
+	items  []Neighbor
+}
+
+func (h *neighborHeap) Len() int { return len(h.items) }
+func (h *neighborHeap) Less(left, right int) bool {
+	return betterNeighbor(h.items[right], h.items[left], h.metric)
+}
+func (h *neighborHeap) Swap(left, right int) {
+	h.items[left], h.items[right] = h.items[right], h.items[left]
+}
+func (h *neighborHeap) Push(value any) {
+	neighbor, ok := value.(Neighbor)
+	if !ok {
+		panic("vector index neighbor heap received an invalid value")
+	}
+	h.items = append(h.items, neighbor)
+}
+func (h *neighborHeap) Pop() any {
+	last := len(h.items) - 1
+	value := h.items[last]
+	h.items = h.items[:last]
+	return value
+}
+
+func betterNeighbor(left, right Neighbor, metric string) bool {
+	if metric == document.VectorMetricL2 {
+		if left.Distance != right.Distance {
+			return left.Distance < right.Distance
+		}
+	} else if left.Score != right.Score {
+		return left.Score > right.Score
+	}
+	return compareIdentity(left.RowIdentity, right.RowIdentity) < 0
 }
 
 func normalizeOptions(options Options) (Options, error) {

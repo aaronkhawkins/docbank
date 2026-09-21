@@ -20,6 +20,7 @@ const (
 var (
 	searchLimit  int
 	searchOffset int
+	searchMode   string
 	searchJSON   bool
 	searchTag    string
 	searchMIME   string
@@ -37,6 +38,10 @@ var searchCmd = &cobra.Command{
 		}
 		if searchOffset < 0 {
 			return usageError(errors.New("--offset must not be negative"))
+		}
+		mode, err := client.NormalizeSearchMode(client.SearchMode(searchMode))
+		if err != nil {
+			return usageError(fmt.Errorf("--mode: %w", err))
 		}
 		mimeType, err := store.NormalizeSearchMIMEType(searchMIME)
 		if err != nil {
@@ -65,7 +70,8 @@ var searchCmd = &cobra.Command{
 			return err
 		}
 		opts := client.SearchOptions{
-			MIMEType: mimeType, ModifiedSince: modifiedSince, ModifiedBefore: modifiedBefore,
+			Mode: mode, MIMEType: mimeType,
+			ModifiedSince: modifiedSince, ModifiedBefore: modifiedBefore,
 		}
 		var tagName string
 		if searchTag != "" {
@@ -86,6 +92,11 @@ var searchCmd = &cobra.Command{
 				return fmt.Errorf("search scope %q: %w", searchUnder, store.ErrNotDir)
 			}
 			opts.UnderNodeID = directory.ID
+			info, infoErr := c.Info(cmd.Context())
+			if infoErr != nil {
+				return infoErr
+			}
+			opts.VaultID = info.VaultID
 			underPath = directory.Path
 		}
 		rep, err := c.SearchWithOptions(
@@ -122,11 +133,20 @@ var searchCmd = &cobra.Command{
 			}
 			return nil
 		}
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "mode: requested=%s actual=%s", rep.RequestedMode, rep.ActualMode)
+		if rep.Fallback.Applied {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), " fallback=%s", rep.Fallback.Reason)
+		}
+		if rep.Coverage.State != "unknown" {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), " coverage=%s (%d/%d)", rep.Coverage.State,
+				rep.Coverage.CompleteDocuments, rep.Coverage.ScopedDocuments)
+		}
+		_, _ = fmt.Fprintln(cmd.OutOrStdout())
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
-		_, _ = fmt.Fprintln(w, "SELECTOR\tMATCH\tPATH")
+		_, _ = fmt.Fprintln(w, "RANK\tSELECTOR\tMATCH\tPATH")
 		for _, h := range rep.Hits {
-			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n",
-				formatNodeSelector(h.Node.ID), h.Match, h.Path)
+			_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\n",
+				h.Rank, formatNodeSelector(h.Node.ID), h.Match, h.Path)
 		}
 		if err := w.Flush(); err != nil {
 			return fmt.Errorf("writing search results: %w", err)
@@ -144,6 +164,8 @@ func init() {
 		"maximum results to return (1-1000)")
 	searchCmd.Flags().IntVar(&searchOffset, "offset", 0,
 		"number of ordered results to skip")
+	searchCmd.Flags().StringVar(&searchMode, "mode", "auto",
+		"retrieval mode: auto, lexical, semantic, or hybrid")
 	searchCmd.Flags().StringVar(&searchTag, "tag", "",
 		"require one tag by name or stable ID")
 	searchCmd.Flags().StringVar(&searchMIME, "mime-type", "",

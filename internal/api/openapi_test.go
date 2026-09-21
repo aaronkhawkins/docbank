@@ -97,6 +97,33 @@ func TestOpenAPISearchQueryIsOptional(t *testing.T) {
 	t.Fatal("search q parameter missing")
 }
 
+func TestOpenAPISearchDeclaresRetrievalModesAndEvidence(t *testing.T) {
+	doc := api.NewOfflineServer().API().OpenAPI()
+	op := doc.Paths["/api/v1/search"].Get
+	require.NotNil(t, op)
+	var mode *huma.Param
+	for _, parameter := range op.Parameters {
+		if parameter.Name == "mode" {
+			mode = parameter
+			break
+		}
+	}
+	require.NotNil(t, mode)
+	assert.ElementsMatch(t, []any{"auto", "lexical", "semantic", "hybrid"}, mode.Schema.Enum)
+	report := doc.Components.Schemas.Map()["SearchReport"]
+	require.NotNil(t, report)
+	for _, field := range []string{"requested_mode", "actual_mode", "coverage", "fallback",
+		"skipped_reasons", "trace", "hits", "offset", "next_offset", "truncated"} {
+		assert.Contains(t, report.Properties, field)
+	}
+	hit := doc.Components.Schemas.Map()["SearchHit"]
+	require.NotNil(t, hit)
+	for _, field := range []string{"rank", "score", "excerpt", "lexical_rank", "semantic_rank",
+		"evidence", "explanation"} {
+		assert.Contains(t, hit.Properties, field)
+	}
+}
+
 func TestOpenAPISearchPaginationContract(t *testing.T) {
 	doc := api.NewOfflineServer().API().OpenAPI()
 	for _, path := range []string{"/api/v1/search", "/api/v1/evidence/search"} {

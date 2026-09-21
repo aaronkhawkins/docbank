@@ -2,6 +2,7 @@
 package api_test
 
 import (
+	"context"
 	"crypto/md5" //nolint:gosec // Test coverage for explicitly auxiliary interoperability metadata.
 	"crypto/sha256"
 	"encoding/base64"
@@ -21,8 +22,20 @@ import (
 
 	"go.kenn.io/docbank/document"
 	"go.kenn.io/docbank/internal/api"
+	"go.kenn.io/docbank/internal/retrieval"
 	"go.kenn.io/docbank/internal/store"
 )
+
+type searchServiceStub struct {
+	report retrieval.Report
+	err    error
+	calls  int
+}
+
+func (stub *searchServiceStub) Search(_ context.Context, _ retrieval.Query) (retrieval.Report, error) {
+	stub.calls++
+	return stub.report, stub.err
+}
 
 func TestStatByIDAndPath(t *testing.T) {
 	ts, s := newTestServer(t, nil)
@@ -77,6 +90,57 @@ func TestEvidenceSearchIsExplicitlyLexicalAndCitesNameAuthority(t *testing.T) {
 	assert.Equal(t, "node_name", report.Hits[0].EvidenceKind)
 	assert.Empty(t, report.Hits[0].BuildID)
 	assert.Empty(t, report.Hits[0].BlobHash)
+}
+
+func TestSearchPublishesSemanticEvidenceWithoutInventingExcerpt(t *testing.T) {
+	var stub searchServiceStub
+	ts, _ := newTestServer(t, func(d *api.Deps) {
+		node, err := d.Store.CreateFile(t.Context(), d.Store.RootID(), "Registration Exp. Date.pdf",
+			testHash("semantic-registration"), 42, "application/pdf")
+		require.NoError(t, err)
+		stub.report = retrieval.Report{RequestedMode: retrieval.ModeSemantic,
+			ActualMode: retrieval.ModeSemantic, Coverage: retrieval.Coverage{BindingRequired: true,
+				ScopedDocuments: 1, CompleteDocuments: 1, State: retrieval.CoverageComplete},
+			Limit: 5, Results: []retrieval.Result{{Document: retrieval.DocumentIdentity{
+				VaultID: d.Store.VaultID(), NodeID: node.ID, ContentVersionID: node.CurrentVersionID},
+				Rank: 1, Score: 1.0 / 61.0, Path: "/Registration Exp. Date.pdf", SemanticRank: 1,
+				Evidence: []retrieval.EvidenceReference{{Kind: "embedding", VaultID: d.Store.VaultID(),
+					NodeID: node.ID, NodeRevision: node.Revision, ContentVersionID: node.CurrentVersionID,
+					VectorSpaceID: testHash("space"), EmbeddingSetID: testHash("set"),
+					InputGenerationID: testHash("generation"), InputID: "query-neighbor"}},
+				Explanation: []retrieval.Contribution{{Lane: retrieval.LaneSemantic, Rank: 1,
+					Contribution: 1.0 / 61.0}}}}}
+		d.Search = &stub
+	})
+
+	resp, body := get(t, ts,
+		"/api/v1/search?q=annual+registration+expiration&mode=semantic&limit=5&offset=0", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	var report api.SearchReport
+	require.NoError(t, json.Unmarshal([]byte(body), &report))
+	assert.Equal(t, "semantic", report.RequestedMode)
+	assert.Equal(t, "semantic", report.ActualMode)
+	require.Len(t, report.Hits, 1)
+	assert.Equal(t, "semantic", report.Hits[0].Match)
+	assert.Empty(t, report.Hits[0].Excerpt)
+	require.Len(t, report.Hits[0].Evidence, 1)
+	assert.Equal(t, "embedding", report.Hits[0].Evidence[0].Kind)
+}
+
+func TestBrowserSessionCannotTriggerSemanticSearch(t *testing.T) {
+	stub := &searchServiceStub{}
+	ts, _ := newTestServer(t, func(d *api.Deps) { d.Search = stub })
+	resp, body := do(t, ts, http.MethodPost, "/api/daemon/web-session", nil, nil)
+	require.Equal(t, http.StatusCreated, resp.StatusCode, body)
+	var session struct {
+		Token string `json:"token"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &session))
+	headers := map[string]string{"X-Api-Key": "", api.WebSessionHeader: session.Token}
+	resp, body = get(t, ts, "/api/v1/search?q=registration&mode=semantic", headers)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode, body)
+	assert.Contains(t, body, `"code":"web_session_lexical_only"`)
+	assert.Zero(t, stub.calls)
 }
 
 func TestDocumentViewerBindsHistoricalVersionAndOCRToNode(t *testing.T) {
@@ -626,7 +690,7 @@ func TestSearch(t *testing.T) {
 	)
 	require.NoError(t, err)
 	resp, body = get(t, ts, fmt.Sprintf(
-		"/api/v1/search?q=insurance&limit=10&under_node_id=%d", archive.ID,
+		"/api/v1/search?q=insurance&limit=10&vault_id=%s&under_node_id=%d", s.VaultID(), archive.ID,
 	), nil)
 	require.Equal(t, http.StatusOK, resp.StatusCode, body)
 	require.NoError(t, json.Unmarshal([]byte(body), &rep))
@@ -634,7 +698,7 @@ func TestSearch(t *testing.T) {
 	assert.Equal(t, inside.ID, rep.Hits[0].Node.ID)
 	assert.Equal(t, archive.ID, rep.UnderNodeID)
 	resp, body = get(t, ts, fmt.Sprintf(
-		"/api/v1/search?q=insurance&limit=10&under_node_id=%d", inside.ID,
+		"/api/v1/search?q=insurance&limit=10&vault_id=%s&under_node_id=%d", s.VaultID(), inside.ID,
 	), nil)
 	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, body)
 	assert.Contains(t, body, `"code":"not_dir"`)

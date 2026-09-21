@@ -24,7 +24,48 @@ import (
 	"go.kenn.io/docbank/document/voyage/voyagetest"
 	"go.kenn.io/docbank/internal/config"
 	"go.kenn.io/docbank/internal/processing"
+	"go.kenn.io/docbank/internal/retrieval"
+	"go.kenn.io/docbank/internal/store"
 )
+
+func TestSelectSemanticSearchBindingRequiresExactlyOneCandidate(t *testing.T) {
+	binding := retrieval.SemanticBinding{ProcessingProfileFingerprint: strings.Repeat("a", 64),
+		BindingID: "semantic"}
+	tests := []struct {
+		name       string
+		candidates []retrieval.SemanticBinding
+		want       *retrieval.SemanticBinding
+		reason     retrieval.FallbackReason
+	}{
+		{name: "none", reason: retrieval.FallbackSemanticNotConfigured},
+		{name: "one", candidates: []retrieval.SemanticBinding{binding},
+			want: &binding},
+		{name: "ambiguous", candidates: []retrieval.SemanticBinding{
+			binding, binding,
+		}, reason: retrieval.FallbackSemanticBindingAmbiguous},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, reason := selectSemanticSearchBinding(test.candidates)
+			assert.Equal(t, test.want, got)
+			assert.Equal(t, test.reason, reason)
+		})
+	}
+}
+
+func TestDaemonSearchServiceStartsLexicalWithoutEmbeddingRuntime(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "docbank.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, s.Close()) })
+	service, err := newDaemonSearchService(config.Default(), s, processing.NewEmbeddingRuntimeRegistry())
+	require.NoError(t, err)
+
+	report, err := service.Search(t.Context(), retrieval.Query{Text: "synthetic", Limit: 5})
+	require.NoError(t, err)
+	assert.Equal(t, retrieval.ModeAuto, report.RequestedMode)
+	assert.Equal(t, retrieval.ModeLexical, report.ActualMode)
+	assert.Empty(t, report.Results)
+}
 
 func TestStartEmbeddingWorkerIfReadySkipsMissingBindings(t *testing.T) {
 	starter := &fakeEmbeddingJobStarter{}

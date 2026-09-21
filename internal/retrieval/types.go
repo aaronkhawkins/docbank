@@ -94,6 +94,28 @@ type Coverage struct {
 	State             CoverageState
 }
 
+type FallbackReason string
+
+const (
+	FallbackSemanticNotConfigured        FallbackReason = "semantic_not_configured"
+	FallbackSemanticBindingAmbiguous     FallbackReason = "semantic_binding_ambiguous"
+	FallbackSemanticAuthorityUnavailable FallbackReason = "semantic_authority_unavailable"
+	FallbackQueryEncoderUnavailable      FallbackReason = "query_encoder_unavailable"
+)
+
+type Fallback struct {
+	Applied bool
+	Reason  FallbackReason
+}
+
+type SkippedReason string
+
+const (
+	SkippedLexicalCandidateLimit  SkippedReason = "lexical_candidate_limit"
+	SkippedSemanticCandidateLimit SkippedReason = "semantic_candidate_limit"
+	SkippedFinalCandidateLimit    SkippedReason = "final_candidate_limit"
+)
+
 type TraceCode string
 
 const (
@@ -108,18 +130,24 @@ type TraceEvent struct {
 }
 
 type Report struct {
-	RequestedMode Mode
-	ActualMode    Mode
-	Coverage      Coverage
-	Results       []Result
-	Truncated     bool
-	Trace         []TraceEvent
+	RequestedMode  Mode
+	ActualMode     Mode
+	Coverage       Coverage
+	Fallback       Fallback
+	SkippedReasons []SkippedReason
+	Results        []Result
+	Limit          int
+	Offset         int
+	NextOffset     int
+	Truncated      bool
+	Trace          []TraceEvent
 }
 
 type Query struct {
 	Text                         string
 	Mode                         Mode
 	Limit                        int
+	Offset                       int
 	Scope                        store.SearchOptions
 	ProcessingProfileFingerprint string
 	BindingID                    string

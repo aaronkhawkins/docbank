@@ -518,23 +518,76 @@ type ContentReversionReceipt struct {
 
 // SearchHit pairs a matched node with its display path.
 type SearchHit struct {
-	Node  Node   `json:"node"`
-	Path  string `json:"path"`
-	Match string `json:"match" enum:"name,content,filter"`
+	Node         Node                 `json:"node"`
+	Path         string               `json:"path"`
+	Match        string               `json:"match" enum:"name,content,filter,semantic,hybrid"`
+	Rank         int                  `json:"rank" minimum:"1"`
+	Score        float64              `json:"score"`
+	Excerpt      string               `json:"excerpt,omitzero" maxLength:"2048"`
+	LexicalRank  int                  `json:"lexical_rank,omitzero" minimum:"1"`
+	SemanticRank int                  `json:"semantic_rank,omitzero" minimum:"1"`
+	Evidence     []SearchEvidence     `json:"evidence"`
+	Explanation  []SearchContribution `json:"explanation"`
+}
+
+type SearchEvidence struct {
+	Kind              string `json:"kind"`
+	VaultID           string `json:"vault_id"`
+	NodeID            int64  `json:"node_id" minimum:"1"`
+	NodeRevision      int64  `json:"node_revision,omitzero" minimum:"1"`
+	ContentVersionID  string `json:"content_version_id"`
+	VectorSpaceID     string `json:"vector_space_id,omitzero"`
+	EmbeddingSetID    string `json:"embedding_set_id,omitzero"`
+	InputGenerationID string `json:"input_generation_id,omitzero"`
+	InputID           string `json:"input_id,omitzero"`
+	InputKind         string `json:"input_kind,omitzero"`
+	BuildID           string `json:"build_id,omitzero"`
+	SegmentID         string `json:"segment_id,omitzero"`
+	BlobHash          string `json:"blob_hash,omitzero"`
+}
+
+type SearchContribution struct {
+	Lane         string  `json:"lane" enum:"lexical,semantic"`
+	Rank         int     `json:"rank" minimum:"1"`
+	Contribution float64 `json:"contribution"`
+}
+
+type SearchCoverage struct {
+	BindingRequired   bool   `json:"binding_required"`
+	ScopedDocuments   int    `json:"scoped_documents" minimum:"0"`
+	CompleteDocuments int    `json:"complete_documents" minimum:"0"`
+	State             string `json:"state" enum:"unknown,complete,incomplete"`
+}
+
+type SearchFallback struct {
+	Applied bool   `json:"applied"`
+	Reason  string `json:"reason,omitzero" enum:"semantic_not_configured,semantic_binding_ambiguous,semantic_authority_unavailable,query_encoder_unavailable"`
+}
+
+type SearchTrace struct {
+	Code  string `json:"code" enum:"lexical_candidates,semantic_candidates,fused_candidates"`
+	Count int    `json:"count" minimum:"0"`
 }
 
 // SearchReport is one bounded search result page.
 type SearchReport struct {
-	Hits           []SearchHit `json:"hits"`
-	Limit          int         `json:"limit" minimum:"1" maximum:"1000"`
-	Offset         int         `json:"offset" minimum:"0"`
-	NextOffset     int         `json:"next_offset" minimum:"0"`
-	Truncated      bool        `json:"truncated"`
-	TagID          string      `json:"tag_id,omitzero"`
-	MIMEType       string      `json:"mime_type,omitzero"`
-	UnderNodeID    int64       `json:"under_node_id,omitzero"`
-	ModifiedSince  string      `json:"modified_since,omitzero"`
-	ModifiedBefore string      `json:"modified_before,omitzero"`
+	VaultID        string         `json:"vault_id" format:"uuid"`
+	RequestedMode  string         `json:"requested_mode" enum:"auto,lexical,semantic,hybrid"`
+	ActualMode     string         `json:"actual_mode" enum:"lexical,semantic,hybrid"`
+	Coverage       SearchCoverage `json:"coverage"`
+	Fallback       SearchFallback `json:"fallback"`
+	SkippedReasons []string       `json:"skipped_reasons"`
+	Trace          []SearchTrace  `json:"trace"`
+	Hits           []SearchHit    `json:"hits"`
+	Limit          int            `json:"limit" minimum:"1" maximum:"1000"`
+	Offset         int            `json:"offset" minimum:"0"`
+	NextOffset     int            `json:"next_offset" minimum:"0"`
+	Truncated      bool           `json:"truncated"`
+	TagID          string         `json:"tag_id,omitzero"`
+	MIMEType       string         `json:"mime_type,omitzero"`
+	UnderNodeID    int64          `json:"under_node_id,omitzero"`
+	ModifiedSince  string         `json:"modified_since,omitzero"`
+	ModifiedBefore string         `json:"modified_before,omitzero"`
 }
 
 // EvidenceSearchHit pairs a live document with the immutable evidence that

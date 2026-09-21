@@ -325,8 +325,11 @@ func TestSearchExplainedLexicalCandidatesIncludesNamePath(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.False(t, truncated)
-	require.Len(t, candidates, 1)
-	assert.Equal(t, "/docs/alpha.pdf", candidates[0].Path)
+	require.Len(t, candidates, 2)
+	assert.Equal(t, "/alpha-folder", candidates[0].Path)
+	assert.Equal(t, "dir", candidates[0].Node.Kind)
+	assert.Empty(t, candidates[0].Node.CurrentVersionID)
+	assert.Equal(t, "/docs/alpha.pdf", candidates[1].Path)
 }
 
 func TestSearchFindsLiveNodesOnly(t *testing.T) {

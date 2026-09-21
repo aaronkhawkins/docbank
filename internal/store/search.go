@@ -69,7 +69,7 @@ func (s *Store) SearchExplainedLexicalCandidates(ctx context.Context, query stri
 	var nameCount int
 	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+nodeFrom+`
 		WHERE n.id IN (SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH ?)
-		  AND n.kind='file' AND cv.version_id IS NOT NULL AND n.trashed_at IS NULL `+filterSQL,
+		  AND n.trashed_at IS NULL `+filterSQL,
 		countArgs...).Scan(&nameCount)
 	if err != nil {
 		return nil, false, fmt.Errorf("counting name evidence for %q: %w", query, err)
@@ -78,7 +78,7 @@ func (s *Store) SearchExplainedLexicalCandidates(ctx context.Context, query stri
 	nameArgs = append(nameArgs, fq, limit+1, offset)
 	rows, err := s.db.QueryContext(ctx, `SELECT `+nodeCols+` FROM `+nodeFrom+`
 		WHERE n.id IN (SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH ?)
-		  AND n.kind='file' AND cv.version_id IS NOT NULL AND n.trashed_at IS NULL `+filterSQL+`
+		  AND n.trashed_at IS NULL `+filterSQL+`
 		ORDER BY (SELECT rank FROM nodes_fts WHERE rowid=n.id AND nodes_fts MATCH ?),n.name,n.id
 		LIMIT ? OFFSET ?`, nameArgs...)
 	if err != nil {
@@ -248,6 +248,7 @@ func SearchNeedsQuery(query string, opts SearchOptions) bool {
 type SemanticSearchCandidate struct {
 	VaultID           string
 	NodeID            int64
+	NodeRevision      int64
 	ContentVersionID  string
 	Path              string
 	VectorSpaceID     string
@@ -257,6 +258,11 @@ type SemanticSearchCandidate struct {
 	InputKind         document.EmbeddingInputKind
 	Score             float64
 }
+
+// ErrSemanticAuthorityUnavailable reports that the configured semantic
+// profile, binding, vector space, or active generation is not available.
+// Scope validation errors retain their ordinary store identity.
+var ErrSemanticAuthorityUnavailable = errors.New("semantic search authority is unavailable")
 
 // SemanticSearchResolution binds ranked candidates and coverage to the same
 // current-head snapshot after query embedding and vector search complete.
@@ -292,11 +298,11 @@ func (s *Store) AcquireSemanticSearchAuthority(ctx context.Context, profileFinge
 	}
 	binding, fingerprints, err := embeddingProfileBindingAuthority(ctx, s.db, profileFingerprint, bindingID)
 	if err != nil {
-		return SemanticSearchAuthority{}, err
+		return SemanticSearchAuthority{}, semanticAuthorityUnavailable(err)
 	}
 	profileRecord, err := loadProcessingProfile(ctx, s.db, profileFingerprint)
 	if err != nil {
-		return SemanticSearchAuthority{}, err
+		return SemanticSearchAuthority{}, semanticAuthorityUnavailable(err)
 	}
 	var profile document.ProcessingProfileV1
 	if err := json.Unmarshal(profileRecord.CanonicalProfile, &profile); err != nil {
@@ -310,7 +316,7 @@ func (s *Store) AcquireSemanticSearchAuthority(ctx context.Context, profileFinge
 		return loadErr
 	})
 	if err != nil {
-		return SemanticSearchAuthority{}, err
+		return SemanticSearchAuthority{}, semanticAuthorityUnavailable(err)
 	}
 	if space.ID != vectorSpaceID || space.DescriptorFingerprint != binding.Descriptor.Fingerprint ||
 		space.CompatibilityID != binding.CompatibilityID || space.Dimensions != binding.Dimensions ||
@@ -321,7 +327,7 @@ func (s *Store) AcquireSemanticSearchAuthority(ctx context.Context, profileFinge
 	}
 	lease, err := s.AcquireVectorIndexGeneration(ctx, vectorSpaceID, owner, at, duration)
 	if err != nil {
-		return SemanticSearchAuthority{}, err
+		return SemanticSearchAuthority{}, semanticAuthorityUnavailable(err)
 	}
 	release := func() {
 		_ = s.ReleaseVectorIndexGeneration(context.WithoutCancel(ctx), lease.ID, lease.FencingToken, at)
@@ -344,6 +350,13 @@ func (s *Store) AcquireSemanticSearchAuthority(ctx context.Context, profileFinge
 		Retrieval:       profile.Retrieval,
 		BindingRequired: binding.Activation == document.EmbeddingRequired,
 		ScopedDocuments: required, CompleteDocuments: complete}, nil
+}
+
+func semanticAuthorityUnavailable(err error) error {
+	if errors.Is(err, ErrNotFound) {
+		return fmt.Errorf("%w: %w", ErrSemanticAuthorityUnavailable, err)
+	}
+	return err
 }
 
 func (s *Store) semanticSearchCoverage(ctx context.Context, profileFingerprint, bindingID string,
@@ -461,7 +474,7 @@ func loadSemanticEligibility(ctx context.Context, tx metadataQuerier, profileFin
 	inputKind document.EmbeddingInputKind, vectorSpaceID, filterSQL string, filterArgs []any,
 ) (_ map[semanticEligibilityKey]SemanticSearchCandidate, retErr error) {
 	args := append([]any{vectorSpaceID, profileFingerprint, bindingID, inputKind}, filterArgs...)
-	rows, err := tx.QueryContext(ctx, `SELECT n.id,n.current_version_id,
+	rows, err := tx.QueryContext(ctx, `SELECT n.id,n.revision,n.current_version_id,
 			es.embedding_set_id,es.input_generation_id,es.input_kind,
 			evr.vector_set_id,evr.input_id,evr.checksum
 		FROM `+nodeFrom+`
@@ -494,7 +507,7 @@ func loadSemanticEligibility(ctx context.Context, tx metadataQuerier, profileFin
 			entry SemanticSearchCandidate
 			key   semanticEligibilityKey
 		)
-		if err := rows.Scan(&entry.NodeID, &entry.ContentVersionID, &entry.EmbeddingSetID,
+		if err := rows.Scan(&entry.NodeID, &entry.NodeRevision, &entry.ContentVersionID, &entry.EmbeddingSetID,
 			&entry.InputGenerationID, &entry.InputKind, &key.VectorSetID, &key.InputID, &key.InputChecksum); err != nil {
 			return nil, err
 		}

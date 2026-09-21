@@ -20,6 +20,7 @@ import (
 	"go.kenn.io/docbank/internal/daemonauth"
 	"go.kenn.io/docbank/internal/jobs"
 	internalmaintenance "go.kenn.io/docbank/internal/maintenance"
+	"go.kenn.io/docbank/internal/retrieval"
 	"go.kenn.io/docbank/internal/store"
 	"go.kenn.io/docbank/internal/version"
 )
@@ -46,16 +47,21 @@ type Deps struct {
 	Cfg           config.Config
 	Logger        *slog.Logger // nil → slog.Default()
 	StartedAt     time.Time
-	ShutdownToken string               // "" disables the shutdown route
-	Shutdown      func()               // called (async) by the shutdown route
-	Tracker       *ActivityTracker     // nil → no idle tracking
-	Jobs          *jobs.Supervisor     // nil → no registered background jobs
-	Gate          *OperationGate       // nil → a server-private gate
-	VerifyPage    VerifyPageFunc       // nil → shared bounded maintenance service
-	RepackPage    RepackPageFunc       // nil → shared bounded maintenance service
-	WebURL        string               // fresh per-daemon loopback origin; empty disables browser sessions
-	BlobRegistry  *blob.Registry       // nil keeps storage-registry routes read-only to the primary
-	SuppliedOCR   SuppliedOCRPublisher // nil leaves the optional publication route unavailable
+	ShutdownToken string                // "" disables the shutdown route
+	Shutdown      func()                // called (async) by the shutdown route
+	Tracker       *ActivityTracker      // nil → no idle tracking
+	Jobs          *jobs.Supervisor      // nil → no registered background jobs
+	Gate          *OperationGate        // nil → a server-private gate
+	VerifyPage    VerifyPageFunc        // nil → shared bounded maintenance service
+	RepackPage    RepackPageFunc        // nil → shared bounded maintenance service
+	WebURL        string                // fresh per-daemon loopback origin; empty disables browser sessions
+	BlobRegistry  *blob.Registry        // nil keeps storage-registry routes read-only to the primary
+	SuppliedOCR   SuppliedOCRPublisher  // nil leaves the optional publication route unavailable
+	Search        DocumentSearchService // nil installs a lexical-only service when Store is present
+}
+
+type DocumentSearchService interface {
+	Search(ctx context.Context, query retrieval.Query) (retrieval.Report, error)
 }
 
 // SuppliedOCRPublisher is the narrow daemon dependency behind the supplied
@@ -99,6 +105,15 @@ func NewServer(d Deps) *Server {
 	}
 	if d.StartedAt.IsZero() {
 		d.StartedAt = time.Now()
+	}
+	if d.Search == nil && d.Store != nil {
+		searcher, err := retrieval.NewSearcher(retrieval.SearcherConfig{
+			Backend: d.Store, Owner: "api-document-search", LeaseDuration: 5 * time.Minute,
+		})
+		if err != nil {
+			panic(err)
+		}
+		d.Search = retrieval.NewService(searcher, nil, retrieval.FallbackSemanticNotConfigured)
 	}
 
 	mux := http.NewServeMux()
