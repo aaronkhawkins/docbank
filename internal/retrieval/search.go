@@ -17,7 +17,7 @@ import (
 
 type Backend interface {
 	VaultID() string
-	SearchExplainedLexicalCandidates(ctx context.Context, query string, limit int,
+	SearchExplainedLexicalCandidates(ctx context.Context, query string, limit, offset int,
 		options store.SearchOptions) ([]store.ExplainedLexicalCandidate, bool, error)
 }
 
@@ -243,7 +243,7 @@ func normalizeQuery(query Query) (Query, error) {
 }
 
 func (searcher *Searcher) collectLexical(ctx context.Context, query Query) ([]Candidate, bool, error) {
-	hits, truncated, err := searcher.backend.SearchExplainedLexicalCandidates(ctx, query.Text, query.Limit, query.Scope)
+	hits, truncated, err := searcher.backend.SearchExplainedLexicalCandidates(ctx, query.Text, query.Limit, 0, query.Scope)
 	if err != nil {
 		return nil, false, err
 	}

@@ -344,7 +344,7 @@ func registerReadRoutes(api huma.API, d Deps) {
 		Limit int    `query:"limit" default:"20" minimum:"1" maximum:"100"`
 	}) (*evidenceSearchOutput, error) {
 		hits, truncated, err := d.Store.SearchExplainedLexicalCandidates(
-			ctx, in.Q, in.Limit, store.SearchOptions{},
+			ctx, in.Q, in.Limit, 0, store.SearchOptions{},
 		)
 		if err != nil {
 			return nil, FromStoreError(err)
@@ -492,7 +492,7 @@ func registerReadRoutes(api huma.API, d Deps) {
 			return nil, NewError(http.StatusUnprocessableEntity, "validation", err.Error())
 		}
 		hits, truncated, err := d.Store.SearchPageWithOptions(
-			ctx, in.Q, in.Limit, store.SearchOptions{
+			ctx, in.Q, in.Limit, 0, store.SearchOptions{
 				TagID: in.TagID, MIMEType: mimeType, UnderNodeID: in.UnderNodeID,
 				ModifiedSince: modifiedSince, ModifiedBefore: modifiedBefore,
 			},
