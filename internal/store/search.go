@@ -46,11 +46,14 @@ const maxExplainedSearchExcerptRunes = 512
 
 // SearchExplainedLexicalCandidates preserves SearchPageWithOptions file ordering.
 // Content selection and evidence resolution share one lexical-generation read.
-func (s *Store) SearchExplainedLexicalCandidates(ctx context.Context, query string, limit int,
+func (s *Store) SearchExplainedLexicalCandidates(ctx context.Context, query string, limit, offset int,
 	opts SearchOptions,
 ) ([]ExplainedLexicalCandidate, bool, error) {
 	if limit <= 0 {
 		limit = 50
+	}
+	if offset < 0 {
+		return nil, false, errors.New("search offset must not be negative")
 	}
 	var err error
 	opts, err = s.normalizeSearchOptions(ctx, opts)
@@ -63,12 +66,12 @@ func (s *Store) SearchExplainedLexicalCandidates(ctx context.Context, query stri
 	}
 	filterSQL, filterArgs := searchFilterSQL(opts)
 	nameArgs := append([]any{fq}, filterArgs...)
-	nameArgs = append(nameArgs, fq, limit+1)
+	nameArgs = append(nameArgs, fq, limit+1, offset)
 	rows, err := s.db.QueryContext(ctx, `SELECT `+nodeCols+` FROM `+nodeFrom+`
 		WHERE n.id IN (SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH ?)
 		  AND n.kind='file' AND cv.version_id IS NOT NULL AND n.trashed_at IS NULL `+filterSQL+`
 		ORDER BY (SELECT rank FROM nodes_fts WHERE rowid=n.id AND nodes_fts MATCH ?),n.name,n.id
-		LIMIT ?`, nameArgs...)
+		LIMIT ? OFFSET ?`, nameArgs...)
 	if err != nil {
 		return nil, false, err
 	}
@@ -86,11 +89,19 @@ func (s *Store) SearchExplainedLexicalCandidates(ctx context.Context, query stri
 	if err := s.addSearchPaths(ctx, nameHits); err != nil {
 		return nil, false, err
 	}
-	remaining := limit - len(nameHits)
-	nameSeen := make(map[int64]struct{}, len(nameHits))
-	for _, hit := range nameHits {
-		nameSeen[hit.Node.ID] = struct{}{}
+	nameCount := offset + len(nameHits)
+	if offset > 0 && len(nameHits) == 0 {
+		countArgs := append([]any{fq}, filterArgs...)
+		err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+nodeFrom+`
+			WHERE n.id IN (SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH ?)
+			  AND n.kind='file' AND cv.version_id IS NOT NULL AND n.trashed_at IS NULL `+filterSQL,
+			countArgs...).Scan(&nameCount)
+		if err != nil {
+			return nil, false, fmt.Errorf("counting name evidence for %q: %w", query, err)
+		}
 	}
+	remaining := limit + 1 - len(nameHits)
+	contentOffset := max(0, offset-nameCount)
 	var content []ExplainedLexicalCandidate
 	queryContent := func(queryer metadataQuerier, generationID string) (retErr error) {
 		args := []any{fq}
@@ -100,8 +111,10 @@ func (s *Store) SearchExplainedLexicalCandidates(ctx context.Context, query stri
 			JOIN nodes n ON n.id=matched_cv.node_id AND n.current_version_id=matched_cv.version_id
 			JOIN content_versions cv ON cv.version_id=matched_cv.version_id
 			JOIN text_searchable_versions tsv ON tsv.version_id=matched_cv.version_id
-			WHERE content_fts MATCH ? AND n.trashed_at IS NULL ` + filterSQL + `
+			WHERE content_fts MATCH ? AND n.trashed_at IS NULL
+			 AND n.id NOT IN (SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH ?) ` + filterSQL + `
 			ORDER BY content_fts.rank,n.name,n.id,content_fts.rowid`
+		args = append(args, fq)
 		if generationID != "" {
 			contentQuery = `SELECT ` + nodeCols + `,rendition_lexical_fts.build_id,
 				 rendition_lexical_fts.segment_id,snippet(rendition_lexical_fts,2,char(1),char(2),' … ',24)
@@ -114,10 +127,11 @@ func (s *Store) SearchExplainedLexicalCandidates(ctx context.Context, query stri
 				JOIN content_versions cv ON cv.version_id=a.content_version_id
 				JOIN nodes n ON n.id=cv.node_id AND n.current_version_id=cv.version_id
 				WHERE rendition_lexical_fts MATCH ? AND gb.generation_id=?
-				 AND n.trashed_at IS NULL ` + filterSQL + `
+				 AND n.trashed_at IS NULL
+				 AND n.id NOT IN (SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH ?) ` + filterSQL + `
 				ORDER BY rendition_lexical_fts.rank,n.name,n.id,
 				 rendition_lexical_fts.build_id,rendition_lexical_fts.segment_id`
-			args = append(args, generationID)
+			args = []any{fq, generationID, fq}
 		}
 		args = append(args, filterArgs...)
 		rows, err := queryer.QueryContext(ctx, contentQuery, args...)
@@ -125,7 +139,8 @@ func (s *Store) SearchExplainedLexicalCandidates(ctx context.Context, query stri
 			return err
 		}
 		defer func() { retErr = errors.Join(retErr, rows.Close()) }()
-		seenContent := make(map[int64]struct{}, remaining+1)
+		seenContent := make(map[int64]struct{})
+		uniqueIndex := 0
 		for rows.Next() {
 			var candidate ExplainedLexicalCandidate
 			node, err := scanExplainedLexicalRow(rows, &candidate)
@@ -133,13 +148,14 @@ func (s *Store) SearchExplainedLexicalCandidates(ctx context.Context, query stri
 				return err
 			}
 			candidate.Node, candidate.Match = node, SearchMatchContent
-			if _, duplicate := nameSeen[node.ID]; duplicate {
-				continue
-			}
 			if _, duplicate := seenContent[node.ID]; duplicate {
 				continue
 			}
 			seenContent[node.ID] = struct{}{}
+			if uniqueIndex < contentOffset {
+				uniqueIndex++
+				continue
+			}
 			if generationID == "" {
 				candidate.EvidenceKind = "content_blob"
 				candidate.BlobHash = node.BlobHash
@@ -151,7 +167,7 @@ func (s *Store) SearchExplainedLexicalCandidates(ctx context.Context, query stri
 				return err
 			}
 			content = append(content, candidate)
-			if len(content) == remaining+1 {
+			if len(content) == remaining {
 				break
 			}
 		}
@@ -166,12 +182,12 @@ func (s *Store) SearchExplainedLexicalCandidates(ctx context.Context, query stri
 	if err != nil {
 		return nil, false, err
 	}
-	truncated := len(content) > remaining
-	if truncated {
-		content = content[:remaining]
-	}
 	result := explainedNameCandidates(nameHits)
 	result = append(result, content...)
+	truncated := len(result) > limit
+	if truncated {
+		result = result[:limit]
+	}
 	return result, truncated, nil
 }
 
@@ -1591,17 +1607,20 @@ func ftsQuery(input string) string {
 // deterministic name-search contract: enabling extraction never reorders or
 // hides a filename match that the same limit returned before.
 func (s *Store) SearchPage(ctx context.Context, query string, limit int) ([]SearchHit, bool, error) {
-	return s.SearchPageWithOptions(ctx, query, limit, SearchOptions{})
+	return s.SearchPageWithOptions(ctx, query, limit, 0, SearchOptions{})
 }
 
 // SearchPageWithOptions returns live matches that satisfy every requested
 // filter. Blank queries select a filter-only page; other queries rank name
 // matches before content matches.
 func (s *Store) SearchPageWithOptions(
-	ctx context.Context, query string, limit int, opts SearchOptions,
+	ctx context.Context, query string, limit, offset int, opts SearchOptions,
 ) ([]SearchHit, bool, error) {
 	if limit <= 0 {
 		limit = 50
+	}
+	if offset < 0 {
+		return nil, false, errors.New("search offset must not be negative")
 	}
 	var err error
 	opts, err = s.normalizeSearchOptions(ctx, opts)
@@ -1613,12 +1632,12 @@ func (s *Store) SearchPageWithOptions(
 		return nil, false, ErrSearchQueryRequired
 	}
 	if fq == "" {
-		return s.searchFilterPage(ctx, limit, opts)
+		return s.searchFilterPage(ctx, limit, offset, opts)
 	}
 	filterSQL, filterArgs := searchFilterSQL(opts)
 	nameArgs := []any{fq}
 	nameArgs = append(nameArgs, filterArgs...)
-	nameArgs = append(nameArgs, fq, limit+1)
+	nameArgs = append(nameArgs, fq, limit+1, offset)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+nodeCols+`
 		FROM `+nodeFrom+`
@@ -1627,7 +1646,7 @@ func (s *Store) SearchPageWithOptions(
 		  `+filterSQL+`
 		ORDER BY (SELECT rank FROM nodes_fts WHERE rowid = n.id AND nodes_fts MATCH ?),
 		         n.name, n.id
-		LIMIT ?`, nameArgs...)
+		LIMIT ? OFFSET ?`, nameArgs...)
 	if err != nil {
 		return nil, false, fmt.Errorf("searching %q: %w", query, err)
 	}
@@ -1642,10 +1661,21 @@ func (s *Store) SearchPageWithOptions(
 		}
 		return nameHits, true, nil
 	}
+	nameCount := offset + len(nameHits)
+	if offset > 0 && len(nameHits) == 0 {
+		countArgs := append([]any{fq}, filterArgs...)
+		err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+nodeFrom+`
+			WHERE n.id IN (SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH ?)
+			  AND n.trashed_at IS NULL `+filterSQL, countArgs...).Scan(&nameCount)
+		if err != nil {
+			return nil, false, fmt.Errorf("counting name matches for %q: %w", query, err)
+		}
+	}
 
-	// Content may also match a node already returned by name. Over-fetch by
-	// the complete name set so duplicate filtering cannot conceal truncation.
-	remaining := limit - len(nameHits)
+	// Offset applies after the complete name partition. Content excludes every
+	// name-matching node globally, including names skipped by this page.
+	remaining := limit + 1 - len(nameHits)
+	contentOffset := max(0, offset-nameCount)
 	var contentHits []SearchHit
 	queryContent := func(queryer metadataQuerier, generationID string) error {
 		contentArgs := []any{fq}
@@ -1660,9 +1690,11 @@ func (s *Store) SearchPageWithOptions(
 			JOIN matched_blobs mb ON mb.blob_hash = cv.blob_hash
 			JOIN text_searchable_versions tsv ON tsv.version_id = cv.version_id
 			WHERE n.trashed_at IS NULL
+			  AND n.id NOT IN (SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH ?)
 			  ` + filterSQL + `
 			ORDER BY mb.best_rank, n.name, n.id
-			LIMIT ?`
+			LIMIT ? OFFSET ?`
+		contentArgs = append(contentArgs, fq)
 		if generationID != "" {
 			// Selection, attachment resolution, and row consumption share
 			// this reader's one immutable publication snapshot. Once a
@@ -1685,13 +1717,14 @@ func (s *Store) SearchPageWithOptions(
 				FROM ` + nodeFrom + `
 				JOIN matched_versions mv ON mv.version_id=cv.version_id
 				WHERE n.trashed_at IS NULL
+				  AND n.id NOT IN (SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH ?)
 				  ` + filterSQL + `
 				ORDER BY mv.best_rank,n.name,n.id
-				LIMIT ?`
-			contentArgs = append(contentArgs, generationID)
+				LIMIT ? OFFSET ?`
+			contentArgs = []any{fq, generationID, fq}
 		}
 		contentArgs = append(contentArgs, filterArgs...)
-		contentArgs = append(contentArgs, remaining+len(nameHits)+1)
+		contentArgs = append(contentArgs, remaining, contentOffset)
 		rows, err := queryer.QueryContext(ctx, contentQuery, contentArgs...)
 		if err != nil {
 			return fmt.Errorf("searching extracted content for %q: %w", query, err)
@@ -1710,24 +1743,13 @@ func (s *Store) SearchPageWithOptions(
 	if err != nil {
 		return nil, false, err
 	}
-	seen := make(map[int64]struct{}, len(nameHits))
-	for _, hit := range nameHits {
-		seen[hit.Node.ID] = struct{}{}
-	}
-	filtered := contentHits[:0]
-	for _, hit := range contentHits {
-		if _, exists := seen[hit.Node.ID]; exists {
-			continue
-		}
-		filtered = append(filtered, hit)
-	}
-	truncated := len(filtered) > remaining
-	if truncated {
-		filtered = filtered[:remaining]
-	}
-	hits := make([]SearchHit, 0, len(nameHits)+len(filtered))
+	hits := make([]SearchHit, 0, len(nameHits)+len(contentHits))
 	hits = append(hits, nameHits...)
-	hits = append(hits, filtered...)
+	hits = append(hits, contentHits...)
+	truncated := len(hits) > limit
+	if truncated {
+		hits = hits[:limit]
+	}
 	if err := s.addSearchPaths(ctx, hits); err != nil {
 		return nil, false, err
 	}
@@ -1775,10 +1797,10 @@ func (s *Store) normalizeSearchOptions(ctx context.Context, opts SearchOptions) 
 // searchFilterPage selects the limited page before walking its ancestry, so
 // result data and paths come from one read snapshot without per-hit queries.
 func (s *Store) searchFilterPage(
-	ctx context.Context, limit int, opts SearchOptions,
+	ctx context.Context, limit, offset int, opts SearchOptions,
 ) ([]SearchHit, bool, error) {
 	filterSQL, args := searchFilterSQL(opts)
-	args = append(args, limit+1)
+	args = append(args, limit+1, offset)
 	rows, err := s.db.QueryContext(ctx, `
 		WITH RECURSIVE page AS (
 			SELECT n.id, n.parent_id, n.name, n.modified_at
@@ -1786,7 +1808,7 @@ func (s *Store) searchFilterPage(
 			WHERE n.trashed_at IS NULL AND n.parent_id IS NOT NULL
 			  `+filterSQL+`
 			ORDER BY n.modified_at DESC, n.name, n.id
-			LIMIT ?
+			LIMIT ? OFFSET ?
 		), ancestry(node_id, id, parent_id, path) AS (
 			SELECT id, id, parent_id, name FROM page
 			UNION ALL

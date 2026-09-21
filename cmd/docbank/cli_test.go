@@ -1268,12 +1268,40 @@ func TestSearchCLIReportsTruncation(t *testing.T) {
 
 	out, err := runCLI(t, "search", "report", "--limit", "1")
 	require.NoError(t, err)
-	assert.Contains(t, out, "more than 1 result")
-	assert.Contains(t, out, "increase --limit")
+	assert.Contains(t, out, "use --offset 1 to continue")
+	assert.NotContains(t, out, "increase --limit")
+
+	out, err = runCLI(t, "search", "report", "--limit", "1", "--json")
+	require.NoError(t, err)
+	var first api.SearchReport
+	require.NoError(t, json.Unmarshal([]byte(out), &first))
+	require.Len(t, first.Hits, 1)
+	assert.Equal(t, 0, first.Offset)
+	assert.Equal(t, 1, first.NextOffset)
+	assert.True(t, first.Truncated)
+
+	out, err = runCLI(t, "search", "report", "--limit", "1", "--offset", "1", "--json")
+	require.NoError(t, err)
+	var second api.SearchReport
+	require.NoError(t, json.Unmarshal([]byte(out), &second))
+	require.Len(t, second.Hits, 1)
+	assert.NotEqual(t, first.Hits[0].Node.ID, second.Hits[0].Node.ID)
+	assert.Equal(t, 1, second.Offset)
+	assert.Equal(t, 2, second.NextOffset)
+	assert.False(t, second.Truncated)
+
+	out, err = runCLI(t, "search", "report", "--limit", "1", "--offset", "2")
+	require.NoError(t, err)
+	assert.Equal(t, "no matches\n", out)
+	assert.NotContains(t, out, "to continue")
 
 	_, err = runCLI(t, "search", "report", "--limit", "0")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "between 1 and 1000")
+
+	_, err = runCLI(t, "search", "report", "--offset", "-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--offset must not be negative")
 
 	_, err = runCLI(t, "search")
 	require.Error(t, err)

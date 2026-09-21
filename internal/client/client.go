@@ -879,21 +879,22 @@ type SearchOptions struct {
 }
 
 func (c *Client) Search(ctx context.Context, query string, limit int) (api.SearchReport, error) {
-	return c.SearchWithOptions(ctx, query, limit, SearchOptions{})
+	return c.SearchWithOptions(ctx, query, limit, 0, SearchOptions{})
 }
 
 // SearchEvidence returns an explicitly lexical result set whose hits carry
 // immutable evidence identities suitable for agent citations.
 func (c *Client) SearchEvidence(
-	ctx context.Context, query string, limit int,
+	ctx context.Context, query string, limit, offset int,
 ) (api.EvidenceSearchReport, error) {
-	return c.SearchEvidenceWithOptions(ctx, query, limit, EvidenceSearchOptions{})
+	return c.SearchEvidenceWithOptions(ctx, query, limit, EvidenceSearchOptions{Offset: offset})
 }
 
 // EvidenceSearchOptions binds an optional directory scope to one vault.
 type EvidenceSearchOptions struct {
 	VaultID     string
 	UnderNodeID int64
+	Offset      int
 }
 
 // SearchEvidenceWithOptions returns lexical evidence, optionally restricted
@@ -917,9 +918,13 @@ func (c *Client) SearchEvidenceWithOptions(
 	if opts.UnderNodeID < 0 {
 		return report, errors.New("evidence search directory node ID must be positive")
 	}
+	if opts.Offset < 0 {
+		return report, errors.New("evidence search offset must not be negative")
+	}
 	queryValues := url.Values{}
 	queryValues.Set("q", query)
 	queryValues.Set("limit", strconv.Itoa(limit))
+	queryValues.Set("offset", strconv.Itoa(opts.Offset))
 	if opts.VaultID != "" {
 		queryValues.Set("vault_id", opts.VaultID)
 	}
@@ -934,6 +939,10 @@ func (c *Client) SearchEvidenceWithOptions(
 		(opts.VaultID != "" && report.VaultID != opts.VaultID) ||
 		report.UnderNodeID != opts.UnderNodeID || report.Limit != limit || len(report.Hits) > limit {
 		return api.EvidenceSearchReport{}, errors.New("evidence search response has inconsistent authority")
+	}
+	if !validSearchPagination(limit, opts.Offset, report.Limit, report.Offset, report.NextOffset,
+		len(report.Hits), report.Truncated) {
+		return api.EvidenceSearchReport{}, errors.New("evidence search response has inconsistent pagination authority")
 	}
 	for _, hit := range report.Hits {
 		if hit.Node.ID < 1 || !validUUIDv4(hit.Node.CurrentVersionID) ||
@@ -1002,9 +1011,15 @@ func (c *Client) RenditionText(
 
 // SearchWithOptions returns one bounded ranked or filter-only result set.
 func (c *Client) SearchWithOptions(
-	ctx context.Context, query string, limit int, opts SearchOptions,
+	ctx context.Context, query string, limit, offset int, opts SearchOptions,
 ) (api.SearchReport, error) {
 	var out api.SearchReport
+	if limit < 1 || limit > 1000 {
+		return out, errors.New("search limit must be between 1 and 1000")
+	}
+	if offset < 0 {
+		return out, errors.New("search offset must not be negative")
+	}
 	if opts.TagID != "" && !validUUIDv4(opts.TagID) {
 		return out, errors.New("search tag ID must be a canonical UUIDv4")
 	}
@@ -1024,6 +1039,7 @@ func (c *Client) SearchWithOptions(
 	queryValues := url.Values{}
 	queryValues.Set("q", query)
 	queryValues.Set("limit", strconv.Itoa(limit))
+	queryValues.Set("offset", strconv.Itoa(offset))
 	if opts.TagID != "" {
 		queryValues.Set("tag_id", opts.TagID)
 	}
@@ -1047,7 +1063,25 @@ func (c *Client) SearchWithOptions(
 		out.ModifiedBefore != modifiedBefore {
 		return api.SearchReport{}, errors.New("search response has inconsistent filter authority")
 	}
+	if !validSearchPagination(limit, offset, out.Limit, out.Offset, out.NextOffset,
+		len(out.Hits), out.Truncated) {
+		return api.SearchReport{}, errors.New("search response has inconsistent pagination authority")
+	}
 	return out, nil
+}
+
+func validSearchPagination(
+	requestedLimit, requestedOffset, responseLimit, responseOffset, nextOffset, hitCount int,
+	truncated bool,
+) bool {
+	if responseLimit != requestedLimit || responseOffset != requestedOffset || hitCount > requestedLimit {
+		return false
+	}
+	wantNext := requestedOffset + hitCount
+	if wantNext < requestedOffset || nextOffset != wantNext {
+		return false
+	}
+	return !truncated || hitCount == requestedLimit
 }
 
 // AuditPreviewOptions selects one live directory for permanent enrollment.

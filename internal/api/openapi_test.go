@@ -98,6 +98,36 @@ func TestOpenAPISearchQueryIsOptional(t *testing.T) {
 	t.Fatal("search q parameter missing")
 }
 
+func TestOpenAPISearchPaginationContract(t *testing.T) {
+	doc := api.NewOfflineServer().API().OpenAPI()
+	for _, path := range []string{"/api/v1/search", "/api/v1/evidence/search"} {
+		op := doc.Paths[path].Get
+		require.NotNil(t, op)
+		var offset *huma.Param
+		for _, param := range op.Parameters {
+			if param.Name == "offset" {
+				offset = param
+				break
+			}
+		}
+		require.NotNil(t, offset, "%s offset parameter missing", path)
+		require.NotNil(t, offset.Schema.Minimum)
+		assert.InDelta(t, 0, *offset.Schema.Minimum, 0)
+		assert.Equal(t, 0, offset.Schema.Default)
+	}
+	for _, name := range []string{"SearchReport", "EvidenceSearchReport"} {
+		schema := doc.Components.Schemas.Map()[name]
+		require.NotNil(t, schema)
+		for _, field := range []string{"offset", "next_offset", "truncated"} {
+			assert.Contains(t, schema.Properties, field, "%s.%s missing", name, field)
+		}
+		for _, field := range []string{"offset", "next_offset"} {
+			require.NotNil(t, schema.Properties[field].Minimum)
+			assert.InDelta(t, 0, *schema.Properties[field].Minimum, 0)
+		}
+	}
+}
+
 func TestLongRunningBackupRoutesClearBodyReadDeadline(t *testing.T) {
 	doc := api.NewOfflineServer().API().OpenAPI()
 	for _, operation := range []*huma.Operation{

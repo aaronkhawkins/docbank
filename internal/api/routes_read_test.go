@@ -139,6 +139,9 @@ func TestEvidenceSearchIsExplicitlyLexicalAndCitesNameAuthority(t *testing.T) {
 	assert.Equal(t, "lexical", report.Mode)
 	assert.Equal(t, s.VaultID(), report.VaultID)
 	assert.Equal(t, docs.ID, report.UnderNodeID)
+	assert.Equal(t, 0, report.Offset)
+	assert.Equal(t, 1, report.NextOffset)
+	assert.False(t, report.Truncated)
 	require.Len(t, report.Hits, 1)
 	assert.Equal(t, node.ID, report.Hits[0].Node.ID)
 	assert.Equal(t, "/docs/synthetic-registration.pdf", report.Hits[0].Path)
@@ -622,8 +625,39 @@ func TestSearch(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(body), &rep))
 	assert.Len(t, rep.Hits, 1)
 	assert.Equal(t, 1, rep.Limit)
+	assert.Equal(t, 0, rep.Offset)
+	assert.Equal(t, 1, rep.NextOffset)
 	assert.True(t, rep.Truncated)
 	assert.Equal(t, "name", rep.Hits[0].Match)
+
+	firstID := rep.Hits[0].Node.ID
+	resp, body = get(t, ts, "/api/v1/search?q=insurance&limit=1&offset=1", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	require.NoError(t, json.Unmarshal([]byte(body), &rep))
+	require.Len(t, rep.Hits, 1)
+	assert.NotEqual(t, firstID, rep.Hits[0].Node.ID)
+	assert.Equal(t, 1, rep.Offset)
+	assert.Equal(t, 2, rep.NextOffset)
+	assert.False(t, rep.Truncated)
+
+	resp, body = get(t, ts, "/api/v1/search?q=insurance&limit=1&offset=2", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	require.NoError(t, json.Unmarshal([]byte(body), &rep))
+	assert.Empty(t, rep.Hits)
+	assert.Equal(t, 2, rep.Offset)
+	assert.Equal(t, 2, rep.NextOffset)
+	assert.False(t, rep.Truncated)
+
+	resp, body = get(t, ts, "/api/v1/search?q=insurance&limit=1&offset=3", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	require.NoError(t, json.Unmarshal([]byte(body), &rep))
+	assert.Empty(t, rep.Hits)
+	assert.Equal(t, 3, rep.Offset)
+	assert.Equal(t, 3, rep.NextOffset)
+	assert.False(t, rep.Truncated)
+
+	resp, body = get(t, ts, "/api/v1/search?q=insurance&limit=1&offset=-1", nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, body)
 
 	resp, body = get(t, ts, "/api/v1/search?q=insurance&limit=10&"+
 		"modified_since=2000-01-01T00:00:00-05:00&modified_before=2100-01-01T00:00:00Z", nil)
@@ -714,4 +748,43 @@ func TestSearch(t *testing.T) {
 		"/api/v1/search?q=lighthouse&limit=10&mime_type=text%2Fplain%3B%20charset%3Dutf-8", nil)
 	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, body)
 	assert.Contains(t, body, `"code":"validation"`)
+}
+
+func TestEvidenceSearchPaginatesAndRejectsNegativeOffset(t *testing.T) {
+	ts, s := newTestServer(t, nil)
+	for _, name := range []string{"registration-a.pdf", "registration-b.pdf"} {
+		_, err := s.CreateFile(t.Context(), s.RootID(), name, testHash(name), 42, "application/pdf")
+		require.NoError(t, err)
+	}
+
+	resp, body := get(t, ts, "/api/v1/evidence/search?q=registration&limit=1", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	var first api.EvidenceSearchReport
+	require.NoError(t, json.Unmarshal([]byte(body), &first))
+	require.Len(t, first.Hits, 1)
+	assert.Equal(t, 0, first.Offset)
+	assert.Equal(t, 1, first.NextOffset)
+	assert.True(t, first.Truncated)
+
+	resp, body = get(t, ts, "/api/v1/evidence/search?q=registration&limit=1&offset=1", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	var second api.EvidenceSearchReport
+	require.NoError(t, json.Unmarshal([]byte(body), &second))
+	require.Len(t, second.Hits, 1)
+	assert.NotEqual(t, first.Hits[0].Node.ID, second.Hits[0].Node.ID)
+	assert.Equal(t, 1, second.Offset)
+	assert.Equal(t, 2, second.NextOffset)
+	assert.False(t, second.Truncated)
+
+	resp, body = get(t, ts, "/api/v1/evidence/search?q=registration&limit=1&offset=2", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	var terminal api.EvidenceSearchReport
+	require.NoError(t, json.Unmarshal([]byte(body), &terminal))
+	assert.Empty(t, terminal.Hits)
+	assert.Equal(t, 2, terminal.Offset)
+	assert.Equal(t, 2, terminal.NextOffset)
+	assert.False(t, terminal.Truncated)
+
+	resp, body = get(t, ts, "/api/v1/evidence/search?q=registration&limit=1&offset=-1", nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, body)
 }

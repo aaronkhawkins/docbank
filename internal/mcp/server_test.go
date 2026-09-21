@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"testing"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -37,9 +38,20 @@ func TestServerAdvertisesOnlyReadToolsAndCallsDaemon(t *testing.T) {
 		case "/api/v1/evidence/search":
 			assert.Equal(t, "synthetic registration", r.URL.Query().Get("q"))
 			assert.Equal(t, "3", r.URL.Query().Get("limit"))
-			assert.Equal(t, vaultID, r.URL.Query().Get("vault_id"))
-			assert.Equal(t, "42", r.URL.Query().Get("under_node_id"))
-			_, _ = w.Write([]byte(`{"mode":"lexical","vault_id":"` + vaultID + `","under_node_id":42,"hits":[{"node":{"id":7,"name":"fixture.pdf","kind":"file","current_version_id":"11111111-1111-4111-8111-111111111111","blob_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":42,"revision":1,"created_at":"2026-01-01T00:00:00Z","modified_at":"2026-01-01T00:00:00Z"},"path":"/finance/fixture.pdf","match":"content","evidence_kind":"rendition_segment","build_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","segment_id":"segment-1","excerpt":"synthetic registration"}],"limit":3,"truncated":false}`))
+			underField := ""
+			path := "/fixture.pdf"
+			if r.URL.Query().Get("under_node_id") != "" {
+				assert.Equal(t, vaultID, r.URL.Query().Get("vault_id"))
+				assert.Equal(t, "42", r.URL.Query().Get("under_node_id"))
+				underField = `,"under_node_id":42`
+				path = "/finance/fixture.pdf"
+			} else {
+				assert.Empty(t, r.URL.Query().Get("vault_id"))
+			}
+			offset := r.URL.Query().Get("offset")
+			assert.Contains(t, []string{"0", "7"}, offset)
+			offsetValue, _ := strconv.Atoi(offset)
+			_, _ = w.Write([]byte(`{"mode":"lexical","vault_id":"` + vaultID + `"` + underField + `,"hits":[{"node":{"id":7,"name":"fixture.pdf","kind":"file","current_version_id":"11111111-1111-4111-8111-111111111111","blob_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":42,"revision":1,"created_at":"2026-01-01T00:00:00Z","modified_at":"2026-01-01T00:00:00Z"},"path":"` + path + `","match":"content","evidence_kind":"rendition_segment","build_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","segment_id":"segment-1","excerpt":"synthetic registration"}],"limit":3,"offset":` + strconv.Itoa(offsetValue) + `,"next_offset":` + strconv.Itoa(offsetValue+1) + `,"truncated":false}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -105,7 +117,7 @@ func TestServerAdvertisesOnlyReadToolsAndCallsDaemon(t *testing.T) {
 
 	result, err := clientSession.CallTool(t.Context(), &sdkmcp.CallToolParams{Name: "search_documents",
 		Arguments: map[string]any{"query": "synthetic registration", "vault_id": vaultID,
-			"under_node_id": 42, "limit": 3}})
+			"under_node_id": 42, "limit": 3, "offset": 7}})
 	require.NoError(t, err)
 	assert.False(t, result.IsError)
 	require.Len(t, result.Content, 1)
@@ -113,4 +125,25 @@ func TestServerAdvertisesOnlyReadToolsAndCallsDaemon(t *testing.T) {
 	require.True(t, ok)
 	assert.Contains(t, text.Text, `"mode":"lexical"`)
 	assert.Contains(t, text.Text, `"build_id":"bbbbbbbb`)
+	assert.Contains(t, text.Text, `"offset":7`)
+	assert.Contains(t, text.Text, `"next_offset":8`)
+
+	result, err = clientSession.CallTool(t.Context(), &sdkmcp.CallToolParams{Name: "search_documents",
+		Arguments: map[string]any{"query": "synthetic registration", "limit": 3}})
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	require.Len(t, result.Content, 1)
+	text, ok = result.Content[0].(*sdkmcp.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, text.Text, `"offset":0`)
+	assert.Contains(t, text.Text, `"next_offset":1`)
+
+	result, err = clientSession.CallTool(t.Context(), &sdkmcp.CallToolParams{Name: "search_documents",
+		Arguments: map[string]any{"query": "synthetic registration", "limit": 3, "offset": -1}})
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	require.Len(t, result.Content, 1)
+	text, ok = result.Content[0].(*sdkmcp.TextContent)
+	require.True(t, ok)
+	assert.Equal(t, "Invalid Docbank tool arguments", text.Text)
 }

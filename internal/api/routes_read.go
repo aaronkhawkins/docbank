@@ -386,6 +386,7 @@ func registerReadRoutes(api huma.API, d Deps) {
 		VaultID     string `query:"vault_id" pattern:"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"`
 		UnderNodeID int64  `query:"under_node_id" minimum:"1"`
 		Limit       int    `query:"limit" default:"20" minimum:"1" maximum:"100"`
+		Offset      int    `query:"offset" default:"0" minimum:"0"`
 	}) (*evidenceSearchOutput, error) {
 		if !validVaultDirectoryScope(in.VaultID, in.UnderNodeID) {
 			return nil, NewError(http.StatusUnprocessableEntity, "invalid_scope",
@@ -396,14 +397,15 @@ func registerReadRoutes(api huma.API, d Deps) {
 				"search scope belongs to a different vault")
 		}
 		hits, truncated, err := d.Store.SearchExplainedLexicalCandidates(
-			ctx, in.Q, in.Limit, store.SearchOptions{UnderNodeID: in.UnderNodeID},
+			ctx, in.Q, in.Limit, in.Offset, store.SearchOptions{UnderNodeID: in.UnderNodeID},
 		)
 		if err != nil {
 			return nil, FromStoreError(err)
 		}
 		out := &evidenceSearchOutput{Body: EvidenceSearchReport{
 			Mode: "lexical", VaultID: d.Store.VaultID(), UnderNodeID: in.UnderNodeID,
-			Hits: []EvidenceSearchHit{}, Limit: in.Limit, Truncated: truncated,
+			Hits: []EvidenceSearchHit{}, Limit: in.Limit, Offset: in.Offset,
+			NextOffset: in.Offset + len(hits), Truncated: truncated,
 		}}
 		for _, hit := range hits {
 			out.Body.Hits = append(out.Body.Hits, EvidenceSearchHit{
@@ -528,6 +530,7 @@ func registerReadRoutes(api huma.API, d Deps) {
 	}, func(ctx context.Context, in *struct {
 		Q              string `query:"q"`
 		Limit          int    `query:"limit" default:"50" minimum:"1" maximum:"1000"`
+		Offset         int    `query:"offset" default:"0" minimum:"0"`
 		TagID          string `query:"tag_id" pattern:"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"`
 		MIMEType       string `query:"mime_type" maxLength:"255"`
 		UnderNodeID    int64  `query:"under_node_id" minimum:"1"`
@@ -545,7 +548,7 @@ func registerReadRoutes(api huma.API, d Deps) {
 			return nil, NewError(http.StatusUnprocessableEntity, "validation", err.Error())
 		}
 		hits, truncated, err := d.Store.SearchPageWithOptions(
-			ctx, in.Q, in.Limit, store.SearchOptions{
+			ctx, in.Q, in.Limit, in.Offset, store.SearchOptions{
 				TagID: in.TagID, MIMEType: mimeType, UnderNodeID: in.UnderNodeID,
 				ModifiedSince: modifiedSince, ModifiedBefore: modifiedBefore,
 			},
@@ -554,7 +557,8 @@ func registerReadRoutes(api huma.API, d Deps) {
 			return nil, FromStoreError(err)
 		}
 		out := &searchOutput{Body: SearchReport{
-			Hits: []SearchHit{}, Limit: in.Limit, Truncated: truncated,
+			Hits: []SearchHit{}, Limit: in.Limit, Offset: in.Offset,
+			NextOffset: in.Offset + len(hits), Truncated: truncated,
 			TagID: in.TagID, MIMEType: mimeType, UnderNodeID: in.UnderNodeID,
 			ModifiedSince: modifiedSince, ModifiedBefore: modifiedBefore,
 		}}

@@ -28,6 +28,7 @@ func NewServer(factory ClientFactory) *sdkmcp.Server {
 		VaultID     string `json:"vault_id,omitempty" jsonschema:"Vault UUID returned by resolve_directory; required with under_node_id."`
 		UnderNodeID int64  `json:"under_node_id,omitempty" jsonschema:"Stable directory node ID returned by resolve_directory; required with vault_id."`
 		Limit       int    `json:"limit,omitempty" jsonschema:"Maximum results (1-100, default 20)."`
+		Offset      int    `json:"offset,omitempty" jsonschema:"Zero-based result offset."`
 	}
 	sdkmcp.AddTool(server, &sdkmcp.Tool{Name: "search_documents",
 		Description: "Search live documents lexically, optionally below a directory resolved by resolve_directory. Returns stable evidence identities and bounded excerpts; use list_documents to browse without query terms."},
@@ -37,12 +38,12 @@ func NewServer(factory ClientFactory) *sdkmcp.Server {
 			}
 			if strings.TrimSpace(in.Query) == "" || utf8.RuneCountInString(in.Query) > 4096 ||
 				!validScope(in.VaultID, in.UnderNodeID) ||
-				in.Limit < 1 || in.Limit > 100 {
+				in.Limit < 1 || in.Limit > 100 || in.Offset < 0 {
 				return invalidToolCall[api.EvidenceSearchReport]()
 			}
 			return daemonCall(ctx, factory, func(c *client.Client) (api.EvidenceSearchReport, error) {
 				return c.SearchEvidenceWithOptions(ctx, in.Query, in.Limit, client.EvidenceSearchOptions{
-					VaultID: in.VaultID, UnderNodeID: in.UnderNodeID,
+					VaultID: in.VaultID, UnderNodeID: in.UnderNodeID, Offset: in.Offset,
 				})
 			})
 		})

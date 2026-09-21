@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
-	"errors"
 	"fmt"
 	"io"
 	"text/tabwriter"
@@ -41,7 +40,7 @@ var tagListCmd = &cobra.Command{
 	Short: "List tag definitions",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		if err := validateTagPagination(tagListLimit, tagListOffset); err != nil {
+		if err := validatePagination(tagListLimit, tagListOffset, maxTagLimit); err != nil {
 			return err
 		}
 		c, err := client.Ensure(cmd.Context())
@@ -194,7 +193,7 @@ var tagNodesCmd = &cobra.Command{
 	Short: "List live and trashed nodes carrying a tag",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := validateTagPagination(tagNodesLimit, tagNodesOffset); err != nil {
+		if err := validatePagination(tagNodesLimit, tagNodesOffset, maxTagLimit); err != nil {
 			return err
 		}
 		c, err := client.Ensure(cmd.Context())
@@ -311,16 +310,6 @@ func resolveTag(cmd *cobra.Command, c *client.Client, selector string) (api.Tag,
 		return api.Tag{}, fmt.Errorf("resolving tag %q: %w", selector, err)
 	}
 	return tag, nil
-}
-
-func validateTagPagination(limit, offset int) error {
-	if limit < 1 || limit > maxTagLimit {
-		return usageError(fmt.Errorf("--limit must be between 1 and %d", maxTagLimit))
-	}
-	if offset < 0 {
-		return usageError(errors.New("--offset must not be negative"))
-	}
-	return nil
 }
 
 func writeTag(w io.Writer, tag api.Tag) error {
