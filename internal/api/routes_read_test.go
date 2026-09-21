@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -83,19 +84,55 @@ func TestEvidenceSearchAcceptsAndEchoesStableFilters(t *testing.T) {
 	require.NoError(t, err)
 	tag, err := s.CreateTag(ctx, "renewal")
 	require.NoError(t, err)
-	matching, err := s.CreateFile(ctx, docs.ID, "insurance-renewal.pdf",
+	old, err := s.CreateFile(ctx, docs.ID, "insurance-old.pdf",
+		testHash("evidence-filter-old"), 42, "application/pdf")
+	require.NoError(t, err)
+	matching, err := s.CreateFile(ctx, docs.ID, "insurance-alpha.pdf",
 		testHash("evidence-filter-match"), 42, "application/pdf")
 	require.NoError(t, err)
-	_, err = s.CreateFile(ctx, s.RootID(), "insurance-draft.pdf",
-		testHash("evidence-filter-other"), 42, "application/pdf")
+	second, err := s.CreateFile(ctx, docs.ID, "insurance-beta.pdf",
+		testHash("evidence-filter-second"), 42, "application/pdf")
 	require.NoError(t, err)
-	_, err = s.AssignTag(ctx, tag.ID, matching.ID, matching.Revision)
+	wrongMIME, err := s.CreateFile(ctx, docs.ID, "insurance-text.txt",
+		testHash("evidence-filter-mime"), 42, "text/plain")
+	require.NoError(t, err)
+	outside, err := s.CreateFile(ctx, s.RootID(), "insurance-outside.pdf",
+		testHash("evidence-filter-scope"), 42, "application/pdf")
+	require.NoError(t, err)
+	late, err := s.CreateFile(ctx, docs.ID, "insurance-late.pdf",
+		testHash("evidence-filter-late"), 42, "application/pdf")
+	require.NoError(t, err)
+
+	assign := func(node store.Node) store.Node {
+		t.Helper()
+		change, assignErr := s.AssignTag(ctx, tag.ID, node.ID, node.Revision)
+		require.NoError(t, assignErr)
+		time.Sleep(time.Microsecond)
+		return change.Node
+	}
+	old = assign(old)
+	matching = assign(matching)
+	untagged, err := s.CreateFile(ctx, docs.ID, "insurance-untagged.pdf",
+		testHash("evidence-filter-tag"), 42, "application/pdf")
+	require.NoError(t, err)
+	time.Sleep(time.Microsecond)
+	second = assign(second)
+	wrongMIME = assign(wrongMIME)
+	outside = assign(outside)
+	late = assign(late)
+	require.Less(t, old.ModifiedAt, matching.ModifiedAt)
+	require.Less(t, matching.ModifiedAt, untagged.ModifiedAt)
+	require.Less(t, untagged.ModifiedAt, late.ModifiedAt)
+	for _, node := range []store.Node{second, wrongMIME, outside} {
+		require.GreaterOrEqual(t, node.ModifiedAt, matching.ModifiedAt)
+		require.Less(t, node.ModifiedAt, late.ModifiedAt)
+	}
 	require.NoError(t, err)
 
 	path := fmt.Sprintf("/api/v1/evidence/search?q=insurance&limit=1&tag_id=%s&"+
 		"mime_type=APPLICATION%%2FPDF&under_node_id=%d&"+
-		"modified_since=2000-01-01T00:00:00-05:00&modified_before=2100-01-01T00:00:00Z",
-		tag.ID, docs.ID)
+		"modified_since=%s&modified_before=%s",
+		tag.ID, docs.ID, matching.ModifiedAt, late.ModifiedAt)
 	resp, body := get(t, ts, path, nil)
 	require.Equal(t, http.StatusOK, resp.StatusCode, body)
 	var report api.EvidenceSearchReport
@@ -103,11 +140,26 @@ func TestEvidenceSearchAcceptsAndEchoesStableFilters(t *testing.T) {
 	assert.Equal(t, tag.ID, report.TagID)
 	assert.Equal(t, "application/pdf", report.MIMEType)
 	assert.Equal(t, docs.ID, report.UnderNodeID)
-	assert.Equal(t, "2000-01-01T05:00:00.000000000Z", report.ModifiedSince)
-	assert.Equal(t, "2100-01-01T00:00:00.000000000Z", report.ModifiedBefore)
+	assert.Equal(t, matching.ModifiedAt, report.ModifiedSince)
+	assert.Equal(t, late.ModifiedAt, report.ModifiedBefore)
+	assert.True(t, report.Truncated)
 	require.Len(t, report.Hits, 1)
 	assert.Equal(t, matching.ID, report.Hits[0].Node.ID)
 	assert.Equal(t, "node_name", report.Hits[0].EvidenceKind)
+	assert.NotContains(t, body, `"cursor"`)
+	assert.NotContains(t, body, `"continuation"`)
+
+	emptyPath := fmt.Sprintf("/api/v1/evidence/search?q=missing-term&limit=10&tag_id=%s&"+
+		"mime_type=application%%2Fpdf&under_node_id=%d&modified_since=%s&modified_before=%s",
+		tag.ID, docs.ID, matching.ModifiedAt, late.ModifiedAt)
+	resp, body = get(t, ts, emptyPath, nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	require.NoError(t, json.Unmarshal([]byte(body), &report))
+	assert.Empty(t, report.Hits)
+	assert.False(t, report.Truncated)
+	assert.Equal(t, tag.ID, report.TagID)
+	assert.Equal(t, matching.ModifiedAt, report.ModifiedSince)
+	assert.Equal(t, late.ModifiedAt, report.ModifiedBefore)
 
 	resp, body = get(t, ts, fmt.Sprintf(
 		"/api/v1/evidence/search?q=insurance&limit=10&under_node_id=%d", matching.ID,

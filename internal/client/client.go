@@ -324,17 +324,22 @@ func (c *Client) do(ctx context.Context, method, path string, hdr map[string]str
 func (c *Client) doWithHeaders(
 	ctx context.Context, method, path string, hdr map[string]string, in, out any,
 ) (http.Header, error) {
+	diagnosticTarget := path
+	if queryStart := strings.IndexByte(diagnosticTarget, '?'); queryStart >= 0 {
+		diagnosticTarget = diagnosticTarget[:queryStart]
+	}
 	var body io.Reader
 	if in != nil {
 		b, err := marshalJSONRequest(in)
 		if err != nil {
-			return nil, fmt.Errorf("encoding %s %s request: %w", method, path, err)
+			return nil, fmt.Errorf("encoding %s %s request: %w", method, diagnosticTarget, err)
 		}
 		body = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
 	if err != nil {
-		return nil, fmt.Errorf("building %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("building %s %s: %w", method, diagnosticTarget,
+			redactRequestURL(err, diagnosticTarget))
 	}
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -348,7 +353,8 @@ func (c *Client) doWithHeaders(
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		return nil, &transportError{err: fmt.Errorf(
-			"calling daemon (%s %s): %w", method, path, err,
+			"calling daemon (%s %s): %w", method, diagnosticTarget,
+			redactRequestURL(err, diagnosticTarget),
 		)}
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -361,10 +367,20 @@ func (c *Client) doWithHeaders(
 	}
 	if err := json.UnmarshalRead(resp.Body, out); err != nil {
 		return nil, &responseDecodeError{err: fmt.Errorf(
-			"decoding %s %s response: %w", method, path, err,
+			"decoding %s %s response: %w", method, diagnosticTarget, err,
 		)}
 	}
 	return resp.Header.Clone(), nil
+}
+
+func redactRequestURL(err error, diagnosticTarget string) error {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return err
+	}
+	redacted := *urlErr
+	redacted.URL = diagnosticTarget
+	return &redacted
 }
 
 // marshalJSONRequest is the shared JSON v2 boundary for typed request bodies,
