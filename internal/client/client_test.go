@@ -157,6 +157,30 @@ func TestDocumentsReturnsRecursivePageWithVaultAuthority(t *testing.T) {
 	require.ErrorContains(t, err, "between 1 and 5000")
 }
 
+func TestSearchEvidenceScopesByVaultAndDirectory(t *testing.T) {
+	c, s := newClient(t, serverKey)
+	directory, err := s.Mkdir(t.Context(), s.RootID(), "finance")
+	require.NoError(t, err)
+	node, err := s.CreateFile(t.Context(), directory.ID, "quarterly-report.pdf",
+		strings.Repeat("e", 64), 7, "application/pdf")
+	require.NoError(t, err)
+	_, err = s.CreateFile(t.Context(), s.RootID(), "quarterly-outside.pdf",
+		strings.Repeat("f", 64), 8, "application/pdf")
+	require.NoError(t, err)
+
+	report, err := c.SearchEvidenceWithOptions(t.Context(), "quarterly", 20,
+		client.EvidenceSearchOptions{VaultID: s.VaultID(), UnderNodeID: directory.ID})
+	require.NoError(t, err)
+	assert.Equal(t, s.VaultID(), report.VaultID)
+	assert.Equal(t, directory.ID, report.UnderNodeID)
+	require.Len(t, report.Hits, 1)
+	assert.Equal(t, node.ID, report.Hits[0].Node.ID)
+
+	_, err = c.SearchEvidenceWithOptions(t.Context(), "quarterly", 20,
+		client.EvidenceSearchOptions{VaultID: "bad", UnderNodeID: directory.ID})
+	require.ErrorContains(t, err, "canonical UUIDv4")
+}
+
 func TestProvenanceReturnsStableOriginAuthority(t *testing.T) {
 	c, s := newClient(t, serverKey)
 	run, err := s.BeginIngest(t.Context(), "watch", "agent-sessions")

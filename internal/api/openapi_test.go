@@ -17,6 +17,7 @@ func TestOpenAPIDocumentOffline(t *testing.T) {
 	require.NoError(t, err)
 	doc := string(out)
 	for _, op := range []string{"getNode", "resolvePath", "listChildren", "getNodeContent", "verifyNodeContent",
+		"listDocuments", "searchLexicalEvidence",
 		"listContentVersions", "getContentVersion", "getContentVersionBytes", "pruneNodeContentVersions",
 		"lookupContentReferences",
 		"listTags", "resolveTagByName", "getTag", "listTagNodes", "listNodeTags",

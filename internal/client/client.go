@@ -882,6 +882,20 @@ func (c *Client) Search(ctx context.Context, query string, limit int) (api.Searc
 func (c *Client) SearchEvidence(
 	ctx context.Context, query string, limit int,
 ) (api.EvidenceSearchReport, error) {
+	return c.SearchEvidenceWithOptions(ctx, query, limit, EvidenceSearchOptions{})
+}
+
+// EvidenceSearchOptions binds an optional directory scope to one vault.
+type EvidenceSearchOptions struct {
+	VaultID     string
+	UnderNodeID int64
+}
+
+// SearchEvidenceWithOptions returns lexical evidence, optionally restricted
+// to descendants of one stable directory identity in one vault.
+func (c *Client) SearchEvidenceWithOptions(
+	ctx context.Context, query string, limit int, opts EvidenceSearchOptions,
+) (api.EvidenceSearchReport, error) {
 	var report api.EvidenceSearchReport
 	if strings.TrimSpace(query) == "" {
 		return report, errors.New("evidence search query must not be empty")
@@ -889,11 +903,28 @@ func (c *Client) SearchEvidence(
 	if limit < 1 || limit > 100 {
 		return report, errors.New("evidence search limit must be between 1 and 100")
 	}
-	path := "/api/v1/evidence/search?q=" + url.QueryEscape(query) + "&limit=" + strconv.Itoa(limit)
+	if opts.VaultID != "" && !validUUIDv4(opts.VaultID) {
+		return report, errors.New("evidence search vault ID must be a canonical UUIDv4")
+	}
+	if opts.UnderNodeID < 0 {
+		return report, errors.New("evidence search directory node ID must be positive")
+	}
+	queryValues := url.Values{}
+	queryValues.Set("q", query)
+	queryValues.Set("limit", strconv.Itoa(limit))
+	if opts.VaultID != "" {
+		queryValues.Set("vault_id", opts.VaultID)
+	}
+	if opts.UnderNodeID != 0 {
+		queryValues.Set("under_node_id", strconv.FormatInt(opts.UnderNodeID, 10))
+	}
+	path := "/api/v1/evidence/search?" + queryValues.Encode()
 	if err := c.do(ctx, http.MethodGet, path, nil, nil, &report); err != nil {
 		return api.EvidenceSearchReport{}, err
 	}
-	if report.Mode != "lexical" || report.Limit != limit || len(report.Hits) > limit {
+	if report.Mode != "lexical" || !validUUIDv4(report.VaultID) ||
+		(opts.VaultID != "" && report.VaultID != opts.VaultID) ||
+		report.UnderNodeID != opts.UnderNodeID || report.Limit != limit || len(report.Hits) > limit {
 		return api.EvidenceSearchReport{}, errors.New("evidence search response has inconsistent authority")
 	}
 	for _, hit := range report.Hits {

@@ -52,6 +52,7 @@ human-oriented output.
 |---------|------------|----------|
 | CLI | Human-directed work, shell scripts, and inspecting behavior | Readable output; machine modes where documented |
 | HTTP API | Independent applications and long-running agent workflows | Authenticated JSON, revisions, pagination, structured errors |
+| MCP | Read-only document discovery and evidence retrieval | Root or directory inventory, lexical search, stable identities, bounded pages |
 | OpenAPI | Client generation and capability discovery | `docbank openapi --json`, `/openapi.json`, `/openapi.yaml` |
 | Markdown docs | Context retrieval without HTML scraping | Every public `/foo/` page is also published at `/foo.md` |
 
@@ -95,6 +96,13 @@ non-goals.
 - **Resolve known bytes:** query content references by canonical SHA-256 before
   uploading; inspect every bounded result because the same bytes may be current
   or historical on several live or trashed nodes.
+- **Inventory a vault or folder:** call `list_documents` without scope for the
+  vault root, or call `resolve_directory` once and pass its `vault_id` and
+  directory `id` to `list_documents`. Continue with `limit` and `offset`;
+  restart after concurrent tree changes.
+- **Search within a folder:** pass the same resolved `vault_id` and
+  `under_node_id` to `search_documents`. Scope is explicit authority, never a
+  path fragment or wildcard embedded in query text.
 - **Replace an inspected file:** retain its node ID and revision, send raw bytes
   with declared SHA-256 and size, and require the returned node, new version,
   computed identity, and ETag to agree before accepting success.

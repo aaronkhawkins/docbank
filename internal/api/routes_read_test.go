@@ -106,18 +106,31 @@ func TestEvidenceSearchIsExplicitlyLexicalAndCitesNameAuthority(t *testing.T) {
 	node, err := s.CreateFile(t.Context(), docs.ID, "synthetic-registration.pdf",
 		testHash("evidence-search"), 42, "application/pdf")
 	require.NoError(t, err)
+	_, err = s.CreateFile(t.Context(), s.RootID(), "registration-outside.pdf",
+		testHash("evidence-search-outside"), 43, "application/pdf")
+	require.NoError(t, err)
 
-	resp, body := get(t, ts, "/api/v1/evidence/search?q=registration&limit=5", nil)
+	path := fmt.Sprintf("/api/v1/evidence/search?q=registration&limit=5&vault_id=%s&under_node_id=%d",
+		s.VaultID(), docs.ID)
+	resp, body := get(t, ts, path, nil)
 	require.Equal(t, http.StatusOK, resp.StatusCode, body)
 	var report api.EvidenceSearchReport
 	require.NoError(t, json.Unmarshal([]byte(body), &report))
 	assert.Equal(t, "lexical", report.Mode)
+	assert.Equal(t, s.VaultID(), report.VaultID)
+	assert.Equal(t, docs.ID, report.UnderNodeID)
 	require.Len(t, report.Hits, 1)
 	assert.Equal(t, node.ID, report.Hits[0].Node.ID)
 	assert.Equal(t, "/docs/synthetic-registration.pdf", report.Hits[0].Path)
 	assert.Equal(t, "node_name", report.Hits[0].EvidenceKind)
 	assert.Empty(t, report.Hits[0].BuildID)
 	assert.Empty(t, report.Hits[0].BlobHash)
+
+	resp, body = get(t, ts, fmt.Sprintf(
+		"/api/v1/evidence/search?q=registration&limit=5&vault_id=11111111-1111-4111-8111-111111111111&under_node_id=%d",
+		docs.ID), nil)
+	assert.Equal(t, http.StatusConflict, resp.StatusCode, body)
+	assert.Contains(t, body, `"code":"vault_mismatch"`)
 }
 
 func TestDocumentViewerBindsHistoricalVersionAndOCRToNode(t *testing.T) {

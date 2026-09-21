@@ -376,17 +376,24 @@ func registerReadRoutes(api huma.API, d Deps) {
 		Description: "This endpoint is explicitly lexical. Each result identifies either the node name, " +
 			"the original content blob, or an immutable rendition build and segment.",
 	}, func(ctx context.Context, in *struct {
-		Q     string `query:"q" required:"true" minLength:"1" maxLength:"4096"`
-		Limit int    `query:"limit" default:"20" minimum:"1" maximum:"100"`
+		Q           string `query:"q" required:"true" minLength:"1" maxLength:"4096"`
+		VaultID     string `query:"vault_id" pattern:"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"`
+		UnderNodeID int64  `query:"under_node_id" minimum:"1"`
+		Limit       int    `query:"limit" default:"20" minimum:"1" maximum:"100"`
 	}) (*evidenceSearchOutput, error) {
+		if in.VaultID != "" && in.VaultID != d.Store.VaultID() {
+			return nil, NewError(http.StatusConflict, "vault_mismatch",
+				"search scope belongs to a different vault")
+		}
 		hits, truncated, err := d.Store.SearchExplainedLexicalCandidates(
-			ctx, in.Q, in.Limit, store.SearchOptions{},
+			ctx, in.Q, in.Limit, store.SearchOptions{UnderNodeID: in.UnderNodeID},
 		)
 		if err != nil {
 			return nil, FromStoreError(err)
 		}
 		out := &evidenceSearchOutput{Body: EvidenceSearchReport{
-			Mode: "lexical", Hits: []EvidenceSearchHit{}, Limit: in.Limit, Truncated: truncated,
+			Mode: "lexical", VaultID: d.Store.VaultID(), UnderNodeID: in.UnderNodeID,
+			Hits: []EvidenceSearchHit{}, Limit: in.Limit, Truncated: truncated,
 		}}
 		for _, hit := range hits {
 			out.Body.Hits = append(out.Body.Hits, EvidenceSearchHit{
