@@ -337,6 +337,8 @@ func registerReadRoutes(api huma.API, d Deps) {
 			VaultID: d.Store.VaultID(), UnderNodeID: page.Directory.Node.ID,
 			Directory: fromStoreNode(page.Directory.Node), Items: make([]Node, 0, len(page.Documents)),
 			Total: page.Total, Limit: in.Limit, Offset: in.Offset,
+			NextOffset: in.Offset + len(page.Documents),
+			Truncated:  in.Offset+len(page.Documents) < page.Total,
 		}}
 		out.Body.Directory.Path = page.Directory.Path
 		for _, document := range page.Documents {

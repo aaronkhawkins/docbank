@@ -28,12 +28,12 @@ func TestServerAdvertisesOnlyReadToolsAndCallsDaemon(t *testing.T) {
 			under := r.URL.Query().Get("under_node_id")
 			if under == "" {
 				assert.Empty(t, r.URL.Query().Get("vault_id"))
-				_, _ = w.Write([]byte(`{"vault_id":"` + vaultID + `","under_node_id":1,"directory":{"id":1,"name":"","kind":"dir","revision":1,"path":"/","created_at":"2026-01-01T00:00:00Z","modified_at":"2026-01-01T00:00:00Z"},"items":[],"total":0,"limit":20,"offset":0}`))
+				_, _ = w.Write([]byte(`{"vault_id":"` + vaultID + `","under_node_id":1,"directory":{"id":1,"name":"","kind":"dir","revision":1,"path":"/","created_at":"2026-01-01T00:00:00Z","modified_at":"2026-01-01T00:00:00Z"},"items":[],"total":0,"limit":20,"offset":0,"next_offset":0,"truncated":false}`))
 				return
 			}
 			assert.Equal(t, "42", under)
 			assert.Equal(t, vaultID, r.URL.Query().Get("vault_id"))
-			_, _ = w.Write([]byte(`{"vault_id":"` + vaultID + `","under_node_id":42,"directory":{"id":42,"name":"finance","kind":"dir","revision":1,"path":"/finance","created_at":"2026-01-01T00:00:00Z","modified_at":"2026-01-01T00:00:00Z"},"items":[],"total":0,"limit":20,"offset":0}`))
+			_, _ = w.Write([]byte(`{"vault_id":"` + vaultID + `","under_node_id":42,"directory":{"id":42,"name":"finance","kind":"dir","revision":1,"path":"/finance","created_at":"2026-01-01T00:00:00Z","modified_at":"2026-01-01T00:00:00Z"},"items":[],"total":0,"limit":20,"offset":0,"next_offset":0,"truncated":false}`))
 		case "/api/v1/evidence/search":
 			assert.Equal(t, "synthetic registration", r.URL.Query().Get("q"))
 			assert.Equal(t, "3", r.URL.Query().Get("limit"))
@@ -73,6 +73,11 @@ func TestServerAdvertisesOnlyReadToolsAndCallsDaemon(t *testing.T) {
 		Arguments: map[string]any{"limit": 20, "offset": 0}})
 	require.NoError(t, err)
 	assert.False(t, root.IsError)
+	require.Len(t, root.Content, 1)
+	rootText, ok := root.Content[0].(*sdkmcp.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, rootText.Text, `"next_offset":0`)
+	assert.Contains(t, rootText.Text, `"truncated":false`)
 	invalidScope, err := clientSession.CallTool(t.Context(), &sdkmcp.CallToolParams{Name: "list_documents",
 		Arguments: map[string]any{"under_node_id": 42, "limit": 20}})
 	require.NoError(t, err)
@@ -92,6 +97,11 @@ func TestServerAdvertisesOnlyReadToolsAndCallsDaemon(t *testing.T) {
 		Arguments: map[string]any{"vault_id": vaultID, "under_node_id": 42, "limit": 20, "offset": 0}})
 	require.NoError(t, err)
 	assert.False(t, scoped.IsError)
+	require.Len(t, scoped.Content, 1)
+	scopedText, ok := scoped.Content[0].(*sdkmcp.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, scopedText.Text, `"next_offset":0`)
+	assert.Contains(t, scopedText.Text, `"truncated":false`)
 
 	result, err := clientSession.CallTool(t.Context(), &sdkmcp.CallToolParams{Name: "search_documents",
 		Arguments: map[string]any{"query": "synthetic registration", "vault_id": vaultID,

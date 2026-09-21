@@ -98,8 +98,8 @@ non-goals.
   or historical on several live or trashed nodes.
 - **Inventory a vault or folder:** call `list_documents` without scope for the
   vault root, or call `resolve_directory` once and pass its `vault_id` and
-  directory `id` to `list_documents`. Continue with `limit` and `offset`;
-  restart after concurrent tree changes.
+  directory `id` to `list_documents`. Follow `next_offset` while `truncated` is
+  true; restart after concurrent tree changes.
 - **Search within a folder:** pass the same resolved `vault_id` and
   `under_node_id` to `search_documents`. Scope is explicit authority, never a
   path fragment or wildcard embedded in query text.

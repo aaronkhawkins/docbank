@@ -115,7 +115,8 @@ must be paired with `vault_id` to bind that previously resolved node identity
 to this vault. Supplying only one member of the pair returns `invalid_scope`.
 Responses echo both values, the resolved directory, total count, and an
 offset page of current file nodes with canonical paths and current version
-identity. Ordering is canonical path, then stable node ID. Pages describe the
+identity. `next_offset` is `offset + len(items)`; callers continue only while
+`truncated` is true. Ordering is canonical path, then stable node ID. Pages describe the
 tree at request time, so clients should restart at offset zero after moves,
 renames, trash, restore, or concurrent imports. This is browsing, not search:
 there is no query syntax, globbing, or extracted-text matching.

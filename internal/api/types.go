@@ -57,6 +57,8 @@ type DocumentPage struct {
 	Total       int    `json:"total"`
 	Limit       int    `json:"limit"`
 	Offset      int    `json:"offset"`
+	NextOffset  int    `json:"next_offset" minimum:"0"`
+	Truncated   bool   `json:"truncated"`
 }
 
 // TrashPage is one newest-first page of independently restorable trash roots.

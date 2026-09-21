@@ -37,7 +37,7 @@ Existing lower-layer text search accepts `under_node_id`, but agents cannot yet 
 - R1. A caller can request one bounded page of all live file nodes in the vault, ordered deterministically by canonical path with node ID as the final tie-breaker.
 - R2. A caller can supply one resolved live directory node ID and receive only live file descendants of that directory; the directory itself is never an item.
 - R3. Each inventory item carries canonical path, stable node identity, current content-version identity, current blob and media metadata, size, revision, and timestamps so an agent can choose what to inspect next.
-- R4. Inventory responses carry the resolved scope directory plus `total`, `limit`, and `offset`; each request is a current read snapshot, while later offset pages reconcile against then-current live authority and may shift after moves, deletion, or insertion.
+- R4. Inventory responses carry the resolved scope directory plus `total`, `limit`, `offset`, `next_offset`, and `truncated`; each request is a current read snapshot, while later offset pages reconcile against then-current live authority and may shift after moves, deletion, or insertion.
 
 **Agent search and navigation**
 
@@ -71,7 +71,7 @@ Outside this product change: semantic or hybrid search, snapshot tokens, feature
 ### Key Technical Decisions
 
 - KTD1. **Inventory is a distinct recursive read contract.** Reuse a recursive CTE and stable node identity, but do not overload lexical search or `children`; this preserves the caller's choice between immediate navigation and a more expensive subtree inventory. Governs R1, R2, R6, R7.
-- KTD2. **Inventory uses ordinary offset paging over current authority.** Each request runs in one read transaction and returns scope, count, and page from that snapshot. Pages do not promise a multi-request snapshot; callers restart from offset zero when they require reconciliation after tree changes. No active item-2 PR or remote branch exists from which to inherit a continuation token. Governs R3, R4, R8.
+- KTD2. **Inventory uses ordinary offset paging over current authority.** Each request runs in one read transaction and returns scope, count, and page from that snapshot. `next_offset` and `truncated` match the shared agent continuation vocabulary established by search pagination. Pages do not promise a multi-request snapshot; callers restart from offset zero when they require reconciliation after tree changes. Governs R3, R4, R8.
 - KTD3. **Canonical path is the inventory sort key.** Build paths in SQL for all live descendants and sort by path, then node ID. This gives agents deterministic traversal independent of directory-first child ordering. Governs R1, R3.
 - KTD4. **Scoped MCP search extends evidence-bearing lexical search.** Thread `under_node_id` through the evidence endpoint and client into the existing explained lexical candidate query, preserving evidence identity and current-version filtering instead of downgrading the tool to the less informative general search response. Agent inputs also carry the expected vault ID and reject a mismatch before resolving the node. Governs R5, R8, R9.
 - KTD5. **Root scope is explicit and selected scopes are vault-qualified.** An omitted inventory scope selects the store root; agent-selected scope pairs the process vault ID with a positive live directory ID. Responses return the vault ID, resolved directory node, and canonical path so callers can preserve authority across later calls. Governs R1, R2, R4, R9.
@@ -97,7 +97,7 @@ The inventory route returns a complete metadata page rather than evidence excerp
 ### Assumptions
 
 - The user-requested direct roll-forward contract permits additive HTTP, client, CLI, and MCP surface changes without compatibility modes.
-- Because item 2 has no active pull request or remote branch, this change uses the repository's established offset contract and does not create a cursor that item 2 would later have to match.
+- Inventory follows the repository's shared `offset`, `next_offset`, and `truncated` continuation contract rather than creating a separate cursor.
 - A `list-documents` CLI command is clearer than adding recursion to `ls`, because `ls` remains the immediate-child primitive.
 - MCP directory resolution is a thin projection of the existing absolute-path stat operation; it does not introduce a second path authority.
 
@@ -146,14 +146,14 @@ The new query crosses storage, public embedded API, daemon HTTP/OpenAPI, client 
 - **Requirements:** R1, R2, R3, R4, R6, R7, R8, R9; AE1, AE2, AE3, AE5.
 - **Dependencies:** U1.
 - **Files:** `internal/api/types.go`, `internal/api/routes_read.go`, `internal/api/routes_read_test.go`, `internal/api/openapi_test.go`, `internal/client/client.go`, `internal/client/client_test.go`, `cmd/docbank/root.go`, `cmd/docbank/list_documents.go`, `cmd/docbank/cli_test.go`, `docs/architecture/http-api.md`, `docs/cli-reference.md`, `docs/usage/organizing.md`.
-- **Approach:** Add a read endpoint and page type that accept optional `under_node_id`, `limit`, and `offset`, echo the vault and resolved scope, and validate the response in the client. Add `docbank list-documents [path-or-id]` with pagination flags and JSON output; resolve the optional selector before calling the inventory endpoint. Leave `ls` unchanged and update help to distinguish both operations.
+- **Approach:** Add a read endpoint and page type that accept optional `under_node_id`, `limit`, and `offset`, echo the vault and resolved scope, report `next_offset` and `truncated`, and validate the response in the client. Add `docbank list-documents [path-or-id]` with pagination flags and JSON output; resolve the optional selector before calling the inventory endpoint. Leave `ls` unchanged and update help to distinguish both operations.
 - **Execution note:** Drive the endpoint and client shape from failing integration tests, then add the thin CLI wrapper.
 - **Patterns to follow:** `/nodes/{id}/children`, `Client.ChildrenPage`, `nodeSelector`, CLI JSON envelopes, and generated OpenAPI assertions.
 - **Test scenarios:**
   - Root HTTP and client calls return the exact U1 page envelope and reject invalid pagination bounds.
   - Scoped HTTP and CLI calls resolve a directory once, return only descendant files, and reject file or missing scopes without falling back to root.
   - An unknown node ID fails through the configured vault's normal not-found boundary; the response and client validation retain the selected vault identity.
-  - CLI text and JSON output include stable selector, version/path metadata, total, limit, and offset, while `ls` remains immediate-only.
+  - CLI text and JSON output include stable selector, version/path metadata, total, limit, offset, next offset, and truncation state, while `ls` remains immediate-only.
   - CLI help does not suggest `*` or a path as search text and directs recursive discovery to `list-documents`.
 - **Verification:** API, client, CLI, OpenAPI, and strict documentation tests prove the contract and its discoverability.
 

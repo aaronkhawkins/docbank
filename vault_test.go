@@ -115,12 +115,16 @@ func TestVaultDocumentsPagesCurrentRecursiveFiles(t *testing.T) {
 	assert.Equal(t, "/finance", page.Directory.Path)
 	assert.Equal(t, 2, page.Total)
 	assert.Equal(t, 1, page.Limit)
+	assert.Equal(t, 1, page.NextOffset)
+	assert.True(t, page.Truncated)
 	require.Len(t, page.Items, 1)
 	assert.Equal(t, "/finance/archive/two.txt", page.Items[0].Path)
 
 	second, err := vault.Documents(t.Context(), finance.ID, DocumentOptions{Limit: 1, Offset: 1})
 	require.NoError(t, err)
 	require.Len(t, second.Items, 1)
+	assert.Equal(t, 2, second.NextOffset)
+	assert.False(t, second.Truncated)
 	assert.Equal(t, one.Node.ID, second.Items[0].ID)
 	assert.Equal(t, one.Version.ID, second.Items[0].CurrentVersionID)
 }

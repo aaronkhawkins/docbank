@@ -707,8 +707,10 @@ directory selected by absolute path or stable `id:N`. Results are ordered by
 canonical path and then stable node ID. The default limit is 500; `--limit`
 accepts 1–5000 and `--offset` continues an offset page. Human output includes
 stable node and current-version identities, size, media type, and canonical
-path. JSON includes the vault-qualified scope, resolved directory, total, and
-page coordinates.
+path, and names the next offset when more documents remain. JSON includes
+`next_offset` and `truncated`; continue with `next_offset` only while
+`truncated` is true. It also includes the vault-qualified scope, resolved
+directory, total, and page coordinates.
 
 This command is recursive inventory. `docbank ls` shows immediate children;
 `docbank search` performs lexical name and extracted-text matching. `*` and

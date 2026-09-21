@@ -258,11 +258,13 @@ type DocumentItem struct {
 
 // DocumentPage is one canonical-path-ordered recursive file listing.
 type DocumentPage struct {
-	Directory DocumentItem   `json:"directory"`
-	Items     []DocumentItem `json:"items"`
-	Total     int            `json:"total"`
-	Limit     int            `json:"limit"`
-	Offset    int            `json:"offset"`
+	Directory  DocumentItem   `json:"directory"`
+	Items      []DocumentItem `json:"items"`
+	Total      int            `json:"total"`
+	Limit      int            `json:"limit"`
+	Offset     int            `json:"offset"`
+	NextOffset int            `json:"next_offset"`
+	Truncated  bool           `json:"truncated"`
 }
 
 const (

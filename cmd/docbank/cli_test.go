@@ -1246,6 +1246,8 @@ func TestListDocumentsCLIRecursesWithoutChangingLS(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &page))
 	assert.Equal(t, "/finance", page.Directory.Path)
 	assert.Equal(t, 1, page.Total)
+	assert.Equal(t, 1, page.NextOffset)
+	assert.False(t, page.Truncated)
 	require.Len(t, page.Items, 1)
 	assert.Equal(t, "/finance/archive/report.txt", page.Items[0].Path)
 

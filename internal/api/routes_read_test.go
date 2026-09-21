@@ -79,6 +79,8 @@ func TestDocumentInventoryPagesRootAndDirectory(t *testing.T) {
 	assert.Equal(t, s.RootID(), page.Directory.ID)
 	assert.Equal(t, "/", page.Directory.Path)
 	assert.Equal(t, 3, page.Total)
+	assert.Equal(t, 2, page.NextOffset)
+	assert.True(t, page.Truncated)
 	require.Len(t, page.Items, 2)
 	assert.Equal(t, "/finance/archive/old.pdf", page.Items[0].Path)
 	assert.NotEmpty(t, page.Items[0].CurrentVersionID)
@@ -90,7 +92,16 @@ func TestDocumentInventoryPagesRootAndDirectory(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(body), &page))
 	assert.Equal(t, finance.ID, page.UnderNodeID)
 	assert.Equal(t, 2, page.Total)
+	assert.Equal(t, 2, page.NextOffset)
+	assert.False(t, page.Truncated)
 	assert.Equal(t, current.ID, page.Items[1].ID)
+
+	resp, body = get(t, ts, "/api/v1/documents?limit=2&offset=9", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	require.NoError(t, json.Unmarshal([]byte(body), &page))
+	assert.Empty(t, page.Items)
+	assert.Equal(t, 9, page.NextOffset)
+	assert.False(t, page.Truncated)
 
 	resp, body = get(t, ts, fmt.Sprintf(
 		"/api/v1/documents?under_node_id=%d&vault_id=11111111-1111-4111-8111-111111111111&limit=10",

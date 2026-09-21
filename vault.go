@@ -366,7 +366,8 @@ func (v *Vault) Documents(
 	page := DocumentPage{
 		Directory: DocumentItem{Node: fromStoreNode(view.Directory.Node), Path: view.Directory.Path},
 		Items:     make([]DocumentItem, 0, len(view.Documents)), Total: view.Total,
-		Limit: limit, Offset: opts.Offset,
+		Limit: limit, Offset: opts.Offset, NextOffset: opts.Offset + len(view.Documents),
+		Truncated: opts.Offset+len(view.Documents) < view.Total,
 	}
 	for _, document := range view.Documents {
 		page.Items = append(page.Items, DocumentItem{

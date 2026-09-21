@@ -148,6 +148,8 @@ func TestDocumentsReturnsRecursivePageWithVaultAuthority(t *testing.T) {
 	assert.Equal(t, s.VaultID(), page.VaultID)
 	assert.Equal(t, directory.ID, page.UnderNodeID)
 	assert.Equal(t, "/finance", page.Directory.Path)
+	assert.Equal(t, 1, page.NextOffset)
+	assert.False(t, page.Truncated)
 	require.Len(t, page.Items, 1)
 	assert.Equal(t, "/finance/report.txt", page.Items[0].Path)
 
@@ -159,6 +161,12 @@ func TestDocumentsReturnsRecursivePageWithVaultAuthority(t *testing.T) {
 	require.ErrorContains(t, err, "must be supplied together")
 	_, err = c.Documents(t.Context(), s.VaultID(), 0, 20, 0)
 	require.ErrorContains(t, err, "must be supplied together")
+
+	beyond, err := c.Documents(t.Context(), s.VaultID(), directory.ID, 20, 9)
+	require.NoError(t, err)
+	assert.Empty(t, beyond.Items)
+	assert.Equal(t, 9, beyond.NextOffset)
+	assert.False(t, beyond.Truncated)
 }
 
 func TestSearchEvidenceScopesByVaultAndDirectory(t *testing.T) {

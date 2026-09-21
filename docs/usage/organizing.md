@@ -30,7 +30,8 @@ than directory entries. It returns canonical-path-ordered offset pages with
 stable node IDs, current version IDs, and a vault-qualified directory scope.
 It excludes directories, trash, and retained non-current versions. This is
 inventory rather than lexical search; use `search` to match names or extracted
-text. Restart paging after concurrent tree changes.
+text. Continue with `next_offset` only while `truncated` is true, and restart
+paging after concurrent tree changes.
 
 Node selectors appear everywhere deliberately. A path is a live coordinate
 that can change during reorganization; `id:42` continues to name the same node.

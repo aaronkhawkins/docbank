@@ -71,7 +71,11 @@ var listDocumentsCmd = &cobra.Command{
 			return fmt.Errorf("writing document inventory: %w", err)
 		}
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "showing %d-%d of %d documents\n",
-			page.Offset, page.Offset+len(page.Items), page.Total)
+			page.Offset, page.NextOffset, page.Total)
+		if page.Truncated {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+				"more documents available; use --offset %d to continue\n", page.NextOffset)
+		}
 		return nil
 	},
 }

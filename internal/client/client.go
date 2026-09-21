@@ -481,6 +481,8 @@ func (c *Client) Documents(
 		page.Directory.Kind != "dir" || page.Directory.TrashedAt != "" ||
 		!strings.HasPrefix(page.Directory.Path, "/") || page.Total < 0 ||
 		page.Limit != limit || page.Offset != offset || len(page.Items) > limit ||
+		page.NextOffset != offset+len(page.Items) ||
+		page.Truncated != (page.NextOffset < page.Total) ||
 		(len(page.Items) == 0 && offset < page.Total) ||
 		(len(page.Items) > 0 && offset+len(page.Items) > page.Total) {
 		return api.DocumentPage{}, errors.New("document response has inconsistent pagination authority")

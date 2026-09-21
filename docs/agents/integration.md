@@ -181,8 +181,9 @@ curl --fail-with-body \
 For recursive file inventory, use `GET /api/v1/documents`. With no scope it
 starts at root. For a directory, first resolve its absolute path with
 `GET /api/v1/path`, then send both the selected vault's `vault_id` and the
-directory's stable `under_node_id`. Continue through `total` with `limit` and
-`offset`; restart after concurrent moves, trash, restore, or imports.
+directory's stable `under_node_id`. Every page echoes `offset` and reports
+`next_offset = offset + len(items)`. Continue with `next_offset` only while
+`truncated` is true; restart after concurrent moves, trash, restore, or imports.
 The pair is all-or-none: omit both for root, and supply both for a directory.
 
 The MCP workflow exposes the same distinction as three concrete calls:
