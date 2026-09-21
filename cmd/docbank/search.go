@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"text/tabwriter"
@@ -33,11 +32,8 @@ var searchCmd = &cobra.Command{
 	Use:   "search [<query>...]",
 	Short: "Search document names and extracted text",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if searchLimit < 1 || searchLimit > maxSearchLimit {
-			return usageError(fmt.Errorf("--limit must be between 1 and %d", maxSearchLimit))
-		}
-		if searchOffset < 0 {
-			return usageError(errors.New("--offset must not be negative"))
+		if err := validatePagination(searchLimit, searchOffset, maxSearchLimit); err != nil {
+			return err
 		}
 		mode, err := client.NormalizeSearchMode(client.SearchMode(searchMode))
 		if err != nil {
