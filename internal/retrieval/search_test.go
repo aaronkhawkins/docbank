@@ -74,6 +74,51 @@ func TestSearcherLexicalModePreservesStoreOrderAndStableEvidence(t *testing.T) {
 	assert.Equal(t, "alpha excerpt", report.Results[1].Excerpt)
 }
 
+func TestSearcherLexicalPagesTheStoreStreamWithGlobalRanks(t *testing.T) {
+	t.Parallel()
+	backend := &retrievalBackendStub{vaultID: "vault", lexical: []store.ExplainedLexicalCandidate{
+		{Node: store.Node{ID: 4, CurrentVersionID: "version-one"}, Path: "/one.pdf",
+			Match: store.SearchMatchName, EvidenceKind: "node_name", Excerpt: "one.pdf"},
+		{Node: store.Node{ID: 5, CurrentVersionID: "version-two"}, Path: "/two.pdf",
+			Match: store.SearchMatchName, EvidenceKind: "node_name", Excerpt: "two.pdf"},
+	}}
+	searcher, err := NewSearcher(SearcherConfig{Backend: backend, Owner: "retrieval-test",
+		LeaseDuration: time.Minute, Clock: time.Now})
+	require.NoError(t, err)
+
+	report, err := searcher.Search(t.Context(), Query{
+		Text: "pdf", Mode: ModeLexical, Limit: 1, Offset: 1,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, backend.lexicalRequestedOffset)
+	assert.Equal(t, 1, report.Offset)
+	assert.Equal(t, 2, report.NextOffset)
+	assert.False(t, report.Truncated)
+	require.Len(t, report.Results, 1)
+	assert.Equal(t, int64(5), report.Results[0].Document.NodeID)
+	assert.Equal(t, 2, report.Results[0].Rank)
+	assert.Equal(t, 2, report.Results[0].LexicalRank)
+}
+
+func TestSearcherLexicalKeepsQuerylessFilterPages(t *testing.T) {
+	t.Parallel()
+	backend := &retrievalBackendStub{vaultID: "vault", filtered: []store.SearchHit{{
+		Node: store.Node{ID: 9, Revision: 3, CurrentVersionID: "filtered-version", Name: "filtered.pdf"},
+		Path: "/filtered.pdf", Match: store.SearchMatchFilter,
+	}}}
+	searcher, err := NewSearcher(SearcherConfig{Backend: backend, Owner: "retrieval-test",
+		LeaseDuration: time.Minute, Clock: time.Now})
+	require.NoError(t, err)
+
+	report, err := searcher.Search(t.Context(), Query{Mode: ModeLexical, Limit: 10,
+		Scope: store.SearchOptions{ModifiedSince: "2026-01-01T00:00:00Z"}})
+	require.NoError(t, err)
+	assert.Equal(t, 1, backend.filterCalls)
+	require.Len(t, report.Results, 1)
+	assert.Equal(t, "node_filter", report.Results[0].Evidence[0].Kind)
+	assert.Equal(t, "filtered.pdf", report.Results[0].Excerpt)
+}
+
 func TestSearcherSemanticUsesExactDescriptorAndExhaustsLeasedGeneration(t *testing.T) {
 	t.Parallel()
 	descriptor, generation := retrievalVectorFixture(t)
@@ -115,6 +160,36 @@ func TestSearcherSemanticUsesExactDescriptorAndExhaustsLeasedGeneration(t *testi
 	require.Len(t, report.Results, 1)
 	assert.Empty(t, report.Results[0].Excerpt)
 	assert.Equal(t, document.EmbeddingInputOriginalFile, report.Results[0].Evidence[0].InputKind)
+}
+
+func TestSearcherSemanticPagesOneBoundedRankedUniverse(t *testing.T) {
+	t.Parallel()
+	searcher, backend, _, descriptor := retrievalSearcherFixture(t, true, 3)
+	space := backend.authority.VectorSpace.ID
+	backend.semantic = []store.SemanticSearchCandidate{
+		{VaultID: "vault", NodeID: 1, ContentVersionID: "version-one", Path: "/one.pdf",
+			VectorSpaceID: space, EmbeddingSetID: "set-one", InputGenerationID: "generation-one",
+			InputID: "one", InputKind: document.EmbeddingInputOriginalFile},
+		{VaultID: "vault", NodeID: 2, ContentVersionID: "version-two", Path: "/two.pdf",
+			VectorSpaceID: space, EmbeddingSetID: "set-two", InputGenerationID: "generation-two",
+			InputID: "two", InputKind: document.EmbeddingInputOriginalFile},
+		{VaultID: "vault", NodeID: 3, ContentVersionID: "version-three", Path: "/three.pdf",
+			VectorSpaceID: space, EmbeddingSetID: "set-three", InputGenerationID: "generation-three",
+			InputID: "three", InputKind: document.EmbeddingInputOriginalFile},
+	}
+
+	report, err := searcher.Search(t.Context(), Query{Text: "annual registration expiration",
+		Mode: ModeSemantic, Limit: 1, Offset: 1,
+		ProcessingProfileFingerprint: strings.Repeat("a", 64), BindingID: "required",
+		Authorization: retrievalAuthorization(descriptor)})
+	require.NoError(t, err)
+	assert.Equal(t, 3, backend.semanticRequestedLimit)
+	assert.Equal(t, 2, report.NextOffset)
+	assert.True(t, report.Truncated)
+	require.Len(t, report.Results, 1)
+	assert.Equal(t, int64(2), report.Results[0].Document.NodeID)
+	assert.Equal(t, 2, report.Results[0].Rank)
+	assert.Empty(t, report.Results[0].Excerpt)
 }
 
 func TestSearcherRejectsChangedQueryModelInputBeforeProviderOrIndex(t *testing.T) {
@@ -219,6 +294,62 @@ func TestSearcherExplicitSemanticModesReportProviderFailureAndCoverage(t *testin
 		assert.Equal(t, CoverageIncomplete, report.Coverage.State)
 		assert.Equal(t, 1, provider.calls)
 	})
+}
+
+func TestSearcherHybridFallsBackOnlyForUnavailableSemanticAuthority(t *testing.T) {
+	t.Parallel()
+	searcher, backend, provider, descriptor := retrievalSearcherFixture(t, true, 1)
+	backend.acquireErr = store.ErrSemanticAuthorityUnavailable
+	backend.lexical = []store.ExplainedLexicalCandidate{{Node: store.Node{ID: 5,
+		CurrentVersionID: "version-lexical", Name: "registration.pdf"}, Path: "/registration.pdf",
+		Match: store.SearchMatchName, EvidenceKind: "node_name", Excerpt: "registration.pdf"}}
+
+	report, err := searcher.Search(t.Context(), Query{Text: "annual registration expiration",
+		Mode: ModeHybrid, Limit: 1, ProcessingProfileFingerprint: strings.Repeat("a", 64),
+		BindingID: "required", Authorization: retrievalAuthorization(descriptor)})
+	require.NoError(t, err)
+	assert.Zero(t, provider.calls)
+	assert.Equal(t, ModeHybrid, report.RequestedMode)
+	assert.Equal(t, ModeLexical, report.ActualMode)
+	assert.True(t, report.Fallback.Applied)
+	assert.Equal(t, FallbackSemanticAuthorityUnavailable, report.Fallback.Reason)
+	require.Len(t, report.Results, 1)
+}
+
+func TestServiceKeepsLexicalHealthyWithoutSemanticBinding(t *testing.T) {
+	t.Parallel()
+	backend := &retrievalBackendStub{vaultID: "vault", lexical: []store.ExplainedLexicalCandidate{{
+		Node: store.Node{ID: 5, CurrentVersionID: "version-lexical"}, Path: "/registration.pdf",
+		EvidenceKind: "node_name", Excerpt: "registration.pdf",
+	}}}
+	searcher, err := NewSearcher(SearcherConfig{Backend: backend, Owner: "retrieval-test",
+		LeaseDuration: time.Minute, Clock: time.Now})
+	require.NoError(t, err)
+	service := NewService(searcher, nil, FallbackSemanticNotConfigured)
+
+	report, err := service.Search(t.Context(), Query{Text: "registration", Mode: ModeHybrid, Limit: 1})
+	require.NoError(t, err)
+	assert.Equal(t, ModeHybrid, report.RequestedMode)
+	assert.Equal(t, ModeLexical, report.ActualMode)
+	assert.Equal(t, FallbackSemanticNotConfigured, report.Fallback.Reason)
+
+	_, err = service.Search(t.Context(), Query{Text: "registration", Mode: ModeSemantic, Limit: 1})
+	require.ErrorIs(t, err, ErrSemanticUnavailable)
+}
+
+func TestSearcherHybridDoesNotHideProviderFailure(t *testing.T) {
+	t.Parallel()
+	searcher, backend, provider, descriptor := retrievalSearcherFixture(t, true, 1)
+	provider.err = errors.New("synthetic provider outage")
+	backend.lexical = []store.ExplainedLexicalCandidate{{Node: store.Node{ID: 5,
+		CurrentVersionID: "version-lexical"}, Path: "/registration.pdf",
+		EvidenceKind: "node_name", Excerpt: "registration.pdf"}}
+
+	_, err := searcher.Search(t.Context(), Query{Text: "annual registration expiration",
+		Mode: ModeHybrid, Limit: 1, ProcessingProfileFingerprint: strings.Repeat("a", 64),
+		BindingID: "required", Authorization: retrievalAuthorization(descriptor)})
+	require.ErrorIs(t, err, provider.err)
+	assert.Zero(t, backend.lexicalCalls)
 }
 
 func TestSearcherSemanticPropagatesCorruptLeasedIndex(t *testing.T) {
@@ -368,13 +499,16 @@ type retrievalBackendStub struct {
 	lexical                []store.ExplainedLexicalCandidate
 	authority              store.SemanticSearchAuthority
 	semantic               []store.SemanticSearchCandidate
+	filtered               []store.SearchHit
 	acquireErr             error
 	neighborCount          int
 	sourceManifest         string
 	acquiredAt             time.Time
 	releasedAt             time.Time
 	lexicalCalls           int
+	filterCalls            int
 	lexicalRequestedLimit  int
+	lexicalRequestedOffset int
 	semanticRequestedLimit int
 	releaseErr             error
 	releaseContextErr      error
@@ -499,17 +633,37 @@ func retrievalVectorFixture(t *testing.T) (document.EmbeddingDescriptor, *vector
 
 func (backend *retrievalBackendStub) VaultID() string { return backend.vaultID }
 
-func (backend *retrievalBackendStub) SearchExplainedLexicalCandidates(_ context.Context, _ string, limit, _ int,
+func (backend *retrievalBackendStub) SearchExplainedLexicalCandidates(_ context.Context, _ string, limit, offset int,
 	_ store.SearchOptions,
 ) ([]store.ExplainedLexicalCandidate, bool, error) {
 	backend.lexicalCalls++
 	backend.lexicalRequestedLimit = limit
+	backend.lexicalRequestedOffset = offset
 	candidates := backend.lexical
+	if offset >= len(candidates) {
+		return []store.ExplainedLexicalCandidate{}, false, nil
+	}
+	candidates = candidates[offset:]
 	truncated := backend.lexicalTruncated || len(candidates) > limit
 	if len(candidates) > limit {
 		candidates = candidates[:limit]
 	}
 	return append([]store.ExplainedLexicalCandidate(nil), candidates...), truncated, nil
+}
+
+func (backend *retrievalBackendStub) SearchPageWithOptions(_ context.Context, _ string, limit, offset int,
+	_ store.SearchOptions,
+) ([]store.SearchHit, bool, error) {
+	backend.filterCalls++
+	if offset >= len(backend.filtered) {
+		return []store.SearchHit{}, false, nil
+	}
+	hits := backend.filtered[offset:]
+	truncated := len(hits) > limit
+	if truncated {
+		hits = hits[:limit]
+	}
+	return append([]store.SearchHit(nil), hits...), truncated, nil
 }
 
 func TestSearcherHybridReportsLaneAndFusionTruncation(t *testing.T) {
@@ -531,7 +685,12 @@ func TestSearcherHybridReportsLaneAndFusionTruncation(t *testing.T) {
 			report, err := searcher.Search(t.Context(), Query{Text: "query", Mode: ModeHybrid,
 				Limit: test.limit, Authorization: retrievalAuthorization(descriptor)})
 			require.NoError(t, err)
-			assert.True(t, report.Truncated)
+			if test.lexical || test.semantic {
+				assert.False(t, report.Truncated)
+				assert.NotEmpty(t, report.SkippedReasons)
+			} else {
+				assert.True(t, report.Truncated)
+			}
 			assert.Len(t, report.Results, min(test.limit, 2))
 		})
 	}

@@ -17,6 +17,9 @@ docbank search --modified-since 2026-01-01T00:00:00Z --modified-before 2026-04-0
 docbank search --tag taxes
 docbank search report --limit 2 --offset 0
 docbank search report --limit 2 --offset 2
+docbank search "annual registration expiration" --mode semantic
+docbank search "annual registration expiration" --mode hybrid
+docbank search insurance --mode lexical
 docbank search report --json
 ```
 
@@ -27,6 +30,24 @@ id:198     content  /taxes/2026/car-insurance-notes.md
 ```
 
 ## Semantics
+
+Search accepts `--mode auto`, `lexical`, `semantic`, or `hybrid`. `auto` is the
+default and currently selects lexical search. This preserves the existing
+offline and no-egress behavior for omitted-mode requests. `lexical` explicitly
+selects the same FTS5 path.
+
+`semantic` embeds the query with the exact configured query encoder and searches
+the active vector index for current versions of live documents. The daemon
+enables it only when exactly one query-capable embedding binding is configured;
+zero or multiple eligible bindings leave semantic search unavailable without
+affecting lexical search. Semantic-only hits intentionally omit `excerpt` when
+there is no verified text span that supports one.
+
+`hybrid` fuses lexical and semantic ranks with reciprocal-rank fusion. If the
+semantic binding, current authority, or exact query encoder is unavailable, it
+falls back to lexical search and reports the reason. Provider execution errors,
+corrupt indexes, stale authority, and release failures remain errors rather than
+being hidden by fallback.
 
 - **Prefix matching.** Every whitespace-separated term matches word
   prefixes: `insur` finds `insurance-renewal.pdf`. Multiple terms must
@@ -79,14 +100,16 @@ id:198     content  /taxes/2026/car-insurance-notes.md
   to UTC and echoed in JSON. The bounds apply to the live node's current
   `modified_at`, not filesystem provenance or the age of retained versions.
 
-For scripts, `--json` returns `hits`, `limit`, `offset`, `next_offset`, and
-`truncated` without table formatting. `hits` is always an array, including
-when nothing matches.
+For scripts, `--json` returns `requested_mode`, `actual_mode`, `hits`, `limit`,
+`offset`, `next_offset`, `truncated`, coverage, and any fallback or bounded-work
+reason without table formatting. Each hit has a final rank and may include
+lexical/semantic lane ranks, evidence, an explanation, and a verified lexical
+excerpt. `hits` is always an array, including when nothing matches.
 
 ## Pagination across search surfaces
 
 Ordinary HTTP search uses
-`GET /api/v1/search?q=<query>&limit=<n>&offset=<n>`. Evidence-bearing lexical
+`GET /api/v1/search?q=<query>&mode=<mode>&limit=<n>&offset=<n>`. Evidence-bearing lexical
 search uses `GET /api/v1/evidence/search` with the same parameters; its limit
 range remains 1–100 rather than ordinary search's 1–1000. The Go client accepts
 the offset in `SearchWithOptions` and `SearchEvidence`. The MCP
@@ -111,6 +134,12 @@ Use the same query and filters for every page. This numeric order is
 deterministic while the relevant vault state is unchanged; additions, renames,
 content changes, tag changes, moves, restores, or deletions between requests
 can move results across offsets. Pagination does not create a search snapshot.
+
+Browser-session credentials are restricted to lexical search. Semantic and
+hybrid requests require a master API credential because they can invoke a
+configured external embedding provider. Only an explicit `semantic` or
+`hybrid` request can cause query text to leave the daemon; omitted and `auto`
+requests remain lexical.
 
 ## Text extraction
 

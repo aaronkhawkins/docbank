@@ -216,6 +216,10 @@ func runServe(ctx context.Context) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("configuring embedding runtimes: %w", err)
 	}
+	documentSearch, err := newDaemonSearchService(cfg, s, embeddingRuntimeRegistry)
+	if err != nil {
+		return fmt.Errorf("configuring document search: %w", err)
+	}
 	if err := startEmbeddingWorkerIfReady(jobSupervisor, embeddingRuntimeRegistry,
 		func() (embeddingJobRunner, error) {
 			worker, workerErr := processing.NewEmbeddingWorker(processing.EmbeddingWorkerConfig{
@@ -356,7 +360,7 @@ func runServe(ctx context.Context) (retErr error) {
 		Store: s, Blobs: blobs, VaultRoot: layout.Root, Cfg: cfg, Logger: logger,
 		StartedAt: time.Now(), ShutdownToken: shutdownToken, Shutdown: stop, Tracker: tracker,
 		Jobs: jobSupervisor, Gate: operationGate, WebURL: webURL, BlobRegistry: blobRegistry,
-		SuppliedOCR: suppliedOCRPublisher,
+		SuppliedOCR: suppliedOCRPublisher, Search: documentSearch,
 	})
 	defer srv.Close()
 	newHTTPServer := func() *http.Server {

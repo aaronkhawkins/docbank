@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -90,6 +91,43 @@ func (s *Store) NodeByID(ctx context.Context, id int64) (Node, error) {
 		return Node{}, fmt.Errorf("node %d: %w", id, err)
 	}
 	return n, nil
+}
+
+// NodesByID returns one bounded current node snapshot keyed by stable ID.
+func (s *Store) NodesByID(ctx context.Context, ids []int64) (map[int64]Node, error) {
+	if len(ids) == 0 {
+		return map[int64]Node{}, nil
+	}
+	ids = slices.Compact(slices.Sorted(slices.Values(ids)))
+	if len(ids) > 1000 {
+		return nil, errors.New("node batch exceeds 1000 IDs")
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, len(ids))
+	for index, id := range ids {
+		if id < 1 {
+			return nil, errors.New("node batch IDs must be positive")
+		}
+		args[index] = id
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+nodeCols+` FROM `+nodeFrom+`
+		WHERE n.id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	nodes := make(map[int64]Node, len(ids))
+	for rows.Next() {
+		node, scanErr := scanNode(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		nodes[node.ID] = node
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return nodes, nil
 }
 
 // NodeViewByID returns a node and its live path from one read transaction.

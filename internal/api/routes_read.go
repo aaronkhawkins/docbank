@@ -17,6 +17,7 @@ import (
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
 
+	"go.kenn.io/docbank/internal/retrieval"
 	"go.kenn.io/docbank/internal/store"
 )
 
@@ -564,14 +565,29 @@ func registerReadRoutes(api huma.API, d Deps) {
 			"absolute modification timestamps form an inclusive-since, exclusive-before interval.",
 	}, func(ctx context.Context, in *struct {
 		Q              string `query:"q"`
+		Mode           string `query:"mode" default:"auto" enum:"auto,lexical,semantic,hybrid"`
 		Limit          int    `query:"limit" default:"50" minimum:"1" maximum:"1000"`
 		Offset         int    `query:"offset" default:"0" minimum:"0"`
 		TagID          string `query:"tag_id" pattern:"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"`
 		MIMEType       string `query:"mime_type" maxLength:"255"`
+		VaultID        string `query:"vault_id" pattern:"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"`
 		UnderNodeID    int64  `query:"under_node_id" minimum:"1"`
 		ModifiedSince  string `query:"modified_since" maxLength:"64"`
 		ModifiedBefore string `query:"modified_before" maxLength:"64"`
 	}) (*searchOutput, error) {
+		if browserSessionRequest(ctx) && (in.Mode == string(retrieval.ModeSemantic) ||
+			in.Mode == string(retrieval.ModeHybrid)) {
+			return nil, NewError(http.StatusForbidden, "web_session_lexical_only",
+				"browser sessions may use only lexical or automatic search")
+		}
+		if !validVaultDirectoryScope(in.VaultID, in.UnderNodeID) {
+			return nil, NewError(http.StatusUnprocessableEntity, "invalid_scope",
+				"vault_id and under_node_id must be supplied together")
+		}
+		if in.VaultID != "" && in.VaultID != d.Store.VaultID() {
+			return nil, NewError(http.StatusConflict, "vault_mismatch",
+				"search scope belongs to a different vault")
+		}
 		mimeType, err := store.NormalizeSearchMIMEType(in.MIMEType)
 		if err != nil {
 			return nil, NewError(http.StatusUnprocessableEntity, "validation", err.Error())
@@ -582,25 +598,71 @@ func registerReadRoutes(api huma.API, d Deps) {
 		if err != nil {
 			return nil, NewError(http.StatusUnprocessableEntity, "validation", err.Error())
 		}
-		hits, truncated, err := d.Store.SearchPageWithOptions(
-			ctx, in.Q, in.Limit, in.Offset, store.SearchOptions{
+		if d.Search == nil {
+			return nil, NewError(http.StatusServiceUnavailable, "search_unavailable",
+				"document search is unavailable")
+		}
+		report, err := d.Search.Search(ctx, retrieval.Query{
+			Text: in.Q, Mode: retrieval.Mode(in.Mode), Limit: in.Limit, Offset: in.Offset,
+			Scope: store.SearchOptions{
 				TagID: in.TagID, MIMEType: mimeType, UnderNodeID: in.UnderNodeID,
 				ModifiedSince: modifiedSince, ModifiedBefore: modifiedBefore,
 			},
-		)
+		})
 		if err != nil {
-			return nil, FromStoreError(err)
+			return nil, fromRetrievalError(err)
 		}
 		out := &searchOutput{Body: SearchReport{
-			Hits: []SearchHit{}, Limit: in.Limit, Offset: in.Offset,
-			NextOffset: in.Offset + len(hits), Truncated: truncated,
+			VaultID:       d.Store.VaultID(),
+			RequestedMode: string(report.RequestedMode), ActualMode: string(report.ActualMode),
+			Coverage: SearchCoverage{BindingRequired: report.Coverage.BindingRequired,
+				ScopedDocuments:   report.Coverage.ScopedDocuments,
+				CompleteDocuments: report.Coverage.CompleteDocuments, State: string(report.Coverage.State)},
+			Fallback:       SearchFallback{Applied: report.Fallback.Applied, Reason: string(report.Fallback.Reason)},
+			SkippedReasons: make([]string, len(report.SkippedReasons)), Trace: []SearchTrace{},
+			Hits: []SearchHit{}, Limit: report.Limit, Offset: report.Offset,
+			NextOffset: report.NextOffset, Truncated: report.Truncated,
 			TagID: in.TagID, MIMEType: mimeType, UnderNodeID: in.UnderNodeID,
 			ModifiedSince: modifiedSince, ModifiedBefore: modifiedBefore,
 		}}
-		for _, h := range hits {
-			out.Body.Hits = append(out.Body.Hits, SearchHit{
-				Node: fromStoreNode(h.Node), Path: h.Path, Match: h.Match,
-			})
+		for index, reason := range report.SkippedReasons {
+			out.Body.SkippedReasons[index] = string(reason)
+		}
+		for _, event := range report.Trace {
+			out.Body.Trace = append(out.Body.Trace, SearchTrace{Code: string(event.Code), Count: event.Count})
+		}
+		nodeIDs := make([]int64, len(report.Results))
+		for index, result := range report.Results {
+			nodeIDs[index] = result.Document.NodeID
+		}
+		nodes, err := d.Store.NodesByID(ctx, nodeIDs)
+		if err != nil {
+			return nil, FromStoreError(err)
+		}
+		for _, result := range report.Results {
+			node, exists := nodes[result.Document.NodeID]
+			if !exists || !searchResultMatchesNode(result, node, d.Store.VaultID()) {
+				return nil, NewError(http.StatusConflict, "search_authority_changed",
+					"document search authority changed while rendering results")
+			}
+			hit := SearchHit{Node: fromStoreNode(node), Path: result.Path,
+				Match: searchResultMatch(result), Rank: result.Rank, Score: result.Score,
+				Excerpt: result.Excerpt, LexicalRank: result.LexicalRank,
+				SemanticRank: result.SemanticRank, Evidence: []SearchEvidence{},
+				Explanation: []SearchContribution{}}
+			for _, evidence := range result.Evidence {
+				hit.Evidence = append(hit.Evidence, SearchEvidence{Kind: evidence.Kind,
+					VaultID: evidence.VaultID, NodeID: evidence.NodeID, NodeRevision: evidence.NodeRevision,
+					ContentVersionID: evidence.ContentVersionID, VectorSpaceID: evidence.VectorSpaceID,
+					EmbeddingSetID: evidence.EmbeddingSetID, InputGenerationID: evidence.InputGenerationID,
+					InputID: evidence.InputID, InputKind: string(evidence.InputKind), BuildID: evidence.BuildID,
+					SegmentID: evidence.SegmentID, BlobHash: evidence.BlobHash})
+			}
+			for _, explanation := range result.Explanation {
+				hit.Explanation = append(hit.Explanation, SearchContribution{Lane: string(explanation.Lane),
+					Rank: explanation.Rank, Contribution: explanation.Contribution})
+			}
+			out.Body.Hits = append(out.Body.Hits, hit)
 		}
 		return out, nil
 	})

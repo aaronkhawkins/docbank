@@ -47,6 +47,18 @@ func (runtime *ProviderEmbeddingRuntime) Ready() bool {
 	return runtime != nil && !embeddingInterfaceNil(runtime.provider) && !embeddingInterfaceNil(runtime.blobs) && runtime.classify != nil
 }
 
+// QueryProvider returns the exact provider only when it reproduces the
+// requested persisted descriptor and supports text-query inputs.
+func (runtime *ProviderEmbeddingRuntime) QueryProvider(
+	descriptor document.EmbeddingDescriptor,
+) (document.EmbeddingProvider, error) {
+	if !runtime.Ready() || !reflect.DeepEqual(runtime.provider.Descriptor(), descriptor) ||
+		!descriptor.SupportsTextQuery {
+		return nil, ErrEmbeddingRuntimeUnavailable
+	}
+	return runtime.provider, nil
+}
+
 func (runtime *ProviderEmbeddingRuntime) Classify(err error) (EmbeddingProviderFailure, time.Duration) {
 	if runtime == nil || runtime.classify == nil {
 		return EmbeddingProviderPermanent, 0

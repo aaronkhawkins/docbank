@@ -2,6 +2,7 @@ package processing
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -150,6 +151,49 @@ func (registry *EmbeddingRuntimeRegistry) Prepare(ctx context.Context, work Embe
 		execution.Classify = runtime.Classify
 	}
 	return execution, err
+}
+
+// ResolveQueryEncoder resolves an exact immutable descriptor without
+// weakening the vector space identity recorded by the store.
+func (registry *EmbeddingRuntimeRegistry) ResolveQueryEncoder(_ context.Context,
+	descriptor document.EmbeddingDescriptor,
+) (document.EmbeddingProvider, error) {
+	if registry == nil {
+		return nil, ErrEmbeddingRuntimeUnavailable
+	}
+	registry.mu.RLock()
+	runtime := registry.runtimes[descriptor.Fingerprint]
+	registry.mu.RUnlock()
+	providerRuntime, ok := runtime.(*ProviderEmbeddingRuntime)
+	if !ok {
+		return nil, ErrEmbeddingRuntimeUnavailable
+	}
+	return providerRuntime.QueryProvider(descriptor)
+}
+
+// QueryDescriptors returns the exact query-capable descriptors backed by the
+// registry, in stable fingerprint order.
+func (registry *EmbeddingRuntimeRegistry) QueryDescriptors() []document.EmbeddingDescriptor {
+	if registry == nil {
+		return nil
+	}
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	values := make([]document.EmbeddingDescriptor, 0, len(registry.runtimes))
+	for _, runtime := range registry.runtimes {
+		providerRuntime, ok := runtime.(*ProviderEmbeddingRuntime)
+		if !ok || !providerRuntime.Ready() {
+			continue
+		}
+		descriptor := providerRuntime.provider.Descriptor()
+		if descriptor.SupportsTextQuery {
+			values = append(values, descriptor)
+		}
+	}
+	slices.SortFunc(values, func(left, right document.EmbeddingDescriptor) int {
+		return cmp.Compare(left.Fingerprint, right.Fingerprint)
+	})
+	return values
 }
 
 func (registry *EmbeddingRuntimeRegistry) Classify(err error) (EmbeddingProviderFailure, time.Duration) {

@@ -1174,6 +1174,7 @@ func TestSearchCLI(t *testing.T) {
 
 	out, err := runCLI(t, "search", "insurance")
 	require.NoError(t, err)
+	assert.Contains(t, out, "mode: requested=auto actual=lexical")
 	assert.Contains(t, out, "/inbox/insurance-2026.txt")
 	assert.Contains(t, out, "/inbox/insurance-draft.txt")
 
@@ -1232,6 +1233,18 @@ func TestSearchCLI(t *testing.T) {
 	assert.Equal(t, "2000-01-01T05:00:00.000000000Z", report.ModifiedSince)
 	assert.Equal(t, "2100-01-01T00:00:00.000000000Z", report.ModifiedBefore)
 	require.Len(t, report.Hits, 3)
+
+	out, err = runCLI(t, "search", "insurance", "--mode", "hybrid", "--json")
+	require.NoError(t, err, out)
+	require.NoError(t, json.Unmarshal([]byte(out), &report))
+	assert.Equal(t, "hybrid", report.RequestedMode)
+	assert.Equal(t, "lexical", report.ActualMode)
+	assert.True(t, report.Fallback.Applied)
+
+	_, err = runCLI(t, "search", "insurance", "--mode", "semantic")
+	require.ErrorContains(t, err, "semantic search prerequisites are unavailable")
+	_, err = runCLI(t, "search", "insurance", "--mode", "invalid")
+	require.ErrorContains(t, err, "--mode")
 }
 
 func TestListDocumentsCLIRecursesWithoutChangingLS(t *testing.T) {

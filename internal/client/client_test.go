@@ -260,7 +260,7 @@ func TestSearchWithOptionsUsesStableTagIdentity(t *testing.T) {
 
 	report, err := c.SearchWithOptions(
 		ctx, "insurance", 10, 0, client.SearchOptions{
-			TagID: tag.ID, MIMEType: "APPLICATION/PDF", UnderNodeID: directory.ID,
+			TagID: tag.ID, MIMEType: "APPLICATION/PDF", VaultID: s.VaultID(), UnderNodeID: directory.ID,
 			ModifiedSince: "2000-01-01T00:00:00-05:00", ModifiedBefore: "2100-01-01T00:00:00Z",
 		},
 	)
@@ -298,14 +298,16 @@ func TestSearchWithOptionsUsesStableTagIdentity(t *testing.T) {
 }
 
 func TestSearchClientsForwardAndValidatePagination(t *testing.T) {
-	const vaultID = "22222222-2222-4222-8222-222222222222"
+	const vaultID = "11111111-1111-4111-8111-111111111111"
 	offsets := make(chan string, 2)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		offsets <- r.URL.Query().Get("offset")
 		switch r.URL.Path {
 		case "/api/v1/search":
 			_ = json.MarshalWrite(w, api.SearchReport{
-				Hits: []api.SearchHit{}, Limit: 3, Offset: 7, NextOffset: 7,
+				VaultID: vaultID, RequestedMode: "auto", ActualMode: "lexical",
+				Coverage: api.SearchCoverage{State: "unknown"},
+				Hits:     []api.SearchHit{}, Limit: 3, Offset: 7, NextOffset: 7,
 			})
 		case "/api/v1/evidence/search":
 			_ = json.MarshalWrite(w, api.EvidenceSearchReport{
@@ -337,8 +339,32 @@ func TestSearchClientsForwardAndValidatePagination(t *testing.T) {
 	require.ErrorContains(t, err, "offset must not be negative")
 }
 
+func TestSearchClientForwardsAndValidatesModeAuthority(t *testing.T) {
+	const vaultID = "11111111-1111-4111-8111-111111111111"
+	modes := make(chan string, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		modes <- r.URL.Query().Get("mode")
+		_ = json.MarshalWrite(w, api.SearchReport{VaultID: vaultID, RequestedMode: "hybrid", ActualMode: "lexical",
+			Coverage: api.SearchCoverage{State: "unknown"},
+			Fallback: api.SearchFallback{Applied: true, Reason: "semantic_not_configured"},
+			Hits:     []api.SearchHit{}, Limit: 3, Offset: 0, NextOffset: 0})
+	}))
+	t.Cleanup(ts.Close)
+	report, err := client.New(ts.URL, "key").SearchWithOptions(
+		t.Context(), "annual registration expiration", 3, 0, client.SearchOptions{Mode: "hybrid"},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "hybrid", <-modes)
+	assert.True(t, report.Fallback.Applied)
+
+	_, err = client.New("http://127.0.0.1:1", "key").SearchWithOptions(
+		t.Context(), "registration", 3, 0, client.SearchOptions{Mode: "invalid"},
+	)
+	require.ErrorContains(t, err, "search mode")
+}
+
 func TestSearchClientsRejectMalformedPaginationAuthority(t *testing.T) {
-	const vaultID = "22222222-2222-4222-8222-222222222222"
+	const vaultID = "11111111-1111-4111-8111-111111111111"
 	searchCases := []struct {
 		name   string
 		report api.SearchReport
@@ -351,6 +377,7 @@ func TestSearchClientsRejectMalformedPaginationAuthority(t *testing.T) {
 	}
 	for _, test := range searchCases {
 		t.Run("search "+test.name, func(t *testing.T) {
+			test.report.VaultID = vaultID
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				_ = json.MarshalWrite(w, test.report)
 			}))

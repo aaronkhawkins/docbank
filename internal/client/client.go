@@ -883,12 +883,35 @@ func (c *Client) VerifyNodeContent(ctx context.Context, id, revision int64) (api
 	return report, err
 }
 
+type SearchMode string
+
+const (
+	SearchModeAuto     SearchMode = "auto"
+	SearchModeLexical  SearchMode = "lexical"
+	SearchModeSemantic SearchMode = "semantic"
+	SearchModeHybrid   SearchMode = "hybrid"
+)
+
+func NormalizeSearchMode(mode SearchMode) (SearchMode, error) {
+	if mode == "" {
+		return SearchModeAuto, nil
+	}
+	switch mode {
+	case SearchModeAuto, SearchModeLexical, SearchModeSemantic, SearchModeHybrid:
+		return mode, nil
+	default:
+		return "", errors.New("search mode must be auto, lexical, semantic, or hybrid")
+	}
+}
+
 // SearchOptions narrows ranked search by stable tag, current media type, one
 // live directory's descendants, and an optional half-open modification-time
 // interval.
 type SearchOptions struct {
+	Mode           SearchMode
 	TagID          string
 	MIMEType       string
+	VaultID        string
 	UnderNodeID    int64
 	ModifiedSince  string
 	ModifiedBefore string
@@ -1063,6 +1086,10 @@ func (c *Client) SearchWithOptions(
 	ctx context.Context, query string, limit, offset int, opts SearchOptions,
 ) (api.SearchReport, error) {
 	var out api.SearchReport
+	mode, err := NormalizeSearchMode(opts.Mode)
+	if err != nil {
+		return out, err
+	}
 	if limit < 1 || limit > 1000 {
 		return out, errors.New("search limit must be between 1 and 1000")
 	}
@@ -1079,6 +1106,12 @@ func (c *Client) SearchWithOptions(
 	if opts.UnderNodeID < 0 {
 		return out, errors.New("search directory node ID must be positive")
 	}
+	if (opts.VaultID == "") != (opts.UnderNodeID == 0) {
+		return out, errors.New("search vault ID and directory node ID must be supplied together")
+	}
+	if opts.VaultID != "" && !validUUIDv4(opts.VaultID) {
+		return out, errors.New("search vault ID must be a canonical UUIDv4")
+	}
 	modifiedSince, modifiedBefore, err := store.NormalizeSearchTimeBounds(
 		opts.ModifiedSince, opts.ModifiedBefore,
 	)
@@ -1087,6 +1120,7 @@ func (c *Client) SearchWithOptions(
 	}
 	queryValues := url.Values{}
 	queryValues.Set("q", query)
+	queryValues.Set("mode", string(mode))
 	queryValues.Set("limit", strconv.Itoa(limit))
 	queryValues.Set("offset", strconv.Itoa(offset))
 	if opts.TagID != "" {
@@ -1096,6 +1130,7 @@ func (c *Client) SearchWithOptions(
 		queryValues.Set("mime_type", mimeType)
 	}
 	if opts.UnderNodeID != 0 {
+		queryValues.Set("vault_id", opts.VaultID)
 		queryValues.Set("under_node_id", strconv.FormatInt(opts.UnderNodeID, 10))
 	}
 	if modifiedSince != "" {
@@ -1107,7 +1142,8 @@ func (c *Client) SearchWithOptions(
 	if err := c.do(ctx, http.MethodGet, "/api/v1/search?"+queryValues.Encode(), nil, nil, &out); err != nil {
 		return out, err
 	}
-	if out.TagID != opts.TagID || out.MIMEType != mimeType ||
+	if !validUUIDv4(out.VaultID) || (opts.VaultID != "" && out.VaultID != opts.VaultID) ||
+		out.TagID != opts.TagID || out.MIMEType != mimeType ||
 		out.UnderNodeID != opts.UnderNodeID || out.ModifiedSince != modifiedSince ||
 		out.ModifiedBefore != modifiedBefore {
 		return api.SearchReport{}, errors.New("search response has inconsistent filter authority")
@@ -1116,7 +1152,62 @@ func (c *Client) SearchWithOptions(
 		len(out.Hits), out.Truncated) {
 		return api.SearchReport{}, errors.New("search response has inconsistent pagination authority")
 	}
+	if !validSearchModeAuthority(mode, out) {
+		return api.SearchReport{}, errors.New("search response has inconsistent mode authority")
+	}
+	for _, hit := range out.Hits {
+		if hit.Node.ID < 1 || !strings.HasPrefix(hit.Path, "/") || hit.Rank < 1 || len(hit.Evidence) == 0 {
+			return api.SearchReport{}, errors.New("search response has invalid hit authority")
+		}
+		switch hit.Node.Kind {
+		case "file":
+			if !validUUIDv4(hit.Node.CurrentVersionID) {
+				return api.SearchReport{}, errors.New("search response has invalid file authority")
+			}
+		case "dir":
+			if hit.Node.CurrentVersionID != "" || hit.SemanticRank != 0 || hit.LexicalRank < 1 {
+				return api.SearchReport{}, errors.New("search response has invalid directory authority")
+			}
+		default:
+			return api.SearchReport{}, errors.New("search response has invalid node kind")
+		}
+		if hit.LexicalRank > 0 && hit.Excerpt == "" {
+			return api.SearchReport{}, errors.New("search response has invalid lexical excerpt authority")
+		}
+		for _, evidence := range hit.Evidence {
+			if evidence.VaultID != out.VaultID || evidence.NodeID != hit.Node.ID ||
+				evidence.NodeRevision != hit.Node.Revision ||
+				evidence.ContentVersionID != hit.Node.CurrentVersionID {
+				return api.SearchReport{}, errors.New("search response has invalid evidence authority")
+			}
+			if hit.Node.Kind == "dir" && (evidence.Kind != "node_name" && evidence.Kind != "node_filter" ||
+				evidence.VectorSpaceID != "" || evidence.EmbeddingSetID != "" ||
+				evidence.InputGenerationID != "" || evidence.InputID != "" ||
+				evidence.BuildID != "" || evidence.SegmentID != "" || evidence.BlobHash != "") {
+				return api.SearchReport{}, errors.New("search response has invalid directory evidence")
+			}
+		}
+	}
 	return out, nil
+}
+
+func validSearchModeAuthority(requested SearchMode, report api.SearchReport) bool {
+	if report.RequestedMode != string(requested) || report.Coverage.State == "" {
+		return false
+	}
+	switch requested {
+	case SearchModeAuto, SearchModeLexical:
+		return report.ActualMode == "lexical" && !report.Fallback.Applied && report.Fallback.Reason == ""
+	case SearchModeSemantic:
+		return report.ActualMode == "semantic" && !report.Fallback.Applied && report.Fallback.Reason == ""
+	case SearchModeHybrid:
+		if report.ActualMode == "hybrid" {
+			return !report.Fallback.Applied && report.Fallback.Reason == ""
+		}
+		return report.ActualMode == "lexical" && report.Fallback.Applied && report.Fallback.Reason != ""
+	default:
+		return false
+	}
 }
 
 func validSearchPagination(

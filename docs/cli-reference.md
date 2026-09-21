@@ -646,17 +646,27 @@ returns the complete restored node with its resulting path and revision.
 ## docbank search
 
 ```
-docbank search [<query>...] [--tag <name-or-id>] [--mime-type <type/subtype>] [--under <path-or-id>] [--modified-since <timestamp>] [--modified-before <timestamp>] [--limit <n>] [--offset <n>] [--json]
+docbank search [<query>...] [--mode <auto|lexical|semantic|hybrid>] [--tag <name-or-id>] [--mime-type <type/subtype>] [--under <path-or-id>] [--modified-since <timestamp>] [--modified-before <timestamp>] [--limit <n>] [--offset <n>] [--json]
 ```
 
-Full-text search over live node names and verified extracted text (FTS5).
-Every whitespace-separated term is matched as a prefix; FTS operator syntax
+Ranked search over current versions of live documents. `--mode auto` is the
+default and currently selects local lexical FTS5 search, preserving the
+omitted-mode no-egress behavior. `lexical` selects that path explicitly;
+`semantic` uses the one exact configured query encoder and active vector index;
+`hybrid` fuses lexical and semantic ranks. Hybrid falls back to lexical for a
+reported semantic availability problem, but does not hide provider execution,
+index, authority, or release errors. Browser-session credentials may use only
+lexical mode; explicit semantic or hybrid search requires a master API
+credential and can send query text to the configured embedding provider.
+
+For lexical search, every whitespace-separated term is matched as a prefix;
+FTS operator syntax
 in the query is escaped, not interpreted. Name matches retain their existing
 BM25 order and appear before content-only matches, whose ranking is independent.
 The default limit is 50 and `--limit` accepts 1–1000. `--offset` is a
 non-negative position in the final ordered result stream and defaults to zero.
 When more matches exist, the command prints the exact next offset to pass to
-`--offset`. Output columns are `SELECTOR`, `MATCH`, and `PATH`; no matches
+`--offset`. Output columns are `RANK`, `SELECTOR`, `MATCH`, and `PATH`; no matches
 prints `no matches`.
 
 `--tag` requires one current tag assignment. It accepts a tag's exact name or
@@ -689,7 +699,8 @@ deterministic while the relevant vault state is unchanged; mutations between
 page requests can move results because offset pagination does not create a
 snapshot.
 
-`--json` emits the typed search report with `hits`, the applied `limit`, echoed
+`--json` emits the typed search report with `requested_mode`, `actual_mode`,
+coverage, any fallback or bounded-work reason, `hits`, the applied `limit`, echoed
 `offset`, `next_offset`, and an explicit `truncated` boolean. `next_offset` is
 always `offset + len(hits)`. A filtered report also echoes the stable `tag_id`,
 normalized `mime_type`, stable `under_node_id`, and canonical `modified_since`

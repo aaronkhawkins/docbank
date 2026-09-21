@@ -302,6 +302,19 @@ belongs to the worker, so runtime configuration has no retry-count or retry-dela
 fields. The worker handles transient failures and capacity-driven batch splits;
 malformed responses are recorded separately from rejected document input.
 
+Semantic query search is enabled only when the daemon can select exactly one
+query-capable runtime across all configured processing profiles. The selected
+runtime must match the completed embedding head and active vector index for the
+current live document versions. With no eligible runtime, or with more than one
+eligible runtime, explicit semantic search reports that it is unavailable while
+lexical search remains healthy; hybrid search reports a lexical fallback. The
+daemon never guesses between bindings.
+
+Query text is sent to a configured provider only for an explicit `semantic` or
+`hybrid` request made with a master API credential. `auto`, omitted-mode, and
+explicit `lexical` requests use local FTS5 and cause no embedding-provider
+egress. Browser-session credentials are limited to lexical search.
+
 #### Model input
 
 `[embedding_profiles.<name>.model_input]` pins how document and query inputs are

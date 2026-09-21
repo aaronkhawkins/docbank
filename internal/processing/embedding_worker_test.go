@@ -435,6 +435,33 @@ func TestEmbeddingRuntimeRegistryAndRunLifecycle(t *testing.T) {
 	require.ErrorIs(t, <-done, context.Canceled)
 }
 
+func TestEmbeddingRuntimeRegistryResolvesExactQueryProvider(t *testing.T) {
+	fixture := newEmbeddingWorkerFixture(t)
+	descriptor := fixture.descriptor
+	provider := &embeddingWorkerProvider{
+		runtime: fixture.runtime, binding: "query", descriptor: descriptor,
+	}
+	runtime, err := NewProviderEmbeddingRuntime(
+		provider, &embeddingRuntimeTestBlobs{}, t.TempDir(), fixture.runtime.Classify,
+	)
+	require.NoError(t, err)
+	registry := NewEmbeddingRuntimeRegistry()
+	require.NoError(t, registry.Register(descriptor.Fingerprint, runtime))
+	assert.Equal(t, []document.EmbeddingDescriptor{descriptor}, registry.QueryDescriptors())
+
+	resolved, err := registry.ResolveQueryEncoder(t.Context(), descriptor)
+	require.NoError(t, err)
+	assert.Same(t, provider, resolved)
+
+	drifted := descriptor
+	drifted.ModelRevision = "v2"
+	drifted.Fingerprint = ""
+	drifted, err = document.NewEmbeddingDescriptor(drifted)
+	require.NoError(t, err)
+	_, err = registry.ResolveQueryEncoder(t.Context(), drifted)
+	require.ErrorIs(t, err, ErrEmbeddingRuntimeUnavailable)
+}
+
 func TestEmbeddingWorkerClaimsOnlyAfterMutationGateAdmission(t *testing.T) {
 	fixture := newEmbeddingWorkerFixture(t)
 	work := fixture.work("gate-admission", document.EmbeddingInputRenditionChunk, "semantic")
