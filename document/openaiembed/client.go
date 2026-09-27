@@ -76,12 +76,15 @@ type Profile struct {
 	SecretBinding          string
 	DeploymentEpoch        string
 	ProviderRevisionHeader string
-	RequestTimeout         time.Duration
-	MaxBatchItems          int
-	MaxInputBytes          int64
-	MaxRequestBytes        int64
-	MaxResponseBytes       int64
-	EgressPolicy           providerhttp.EgressPolicy
+	// InputTypeMode opts into the passage/query input_type extension used by
+	// role-aware OpenAI-compatible embedding endpoints.
+	InputTypeMode    string
+	RequestTimeout   time.Duration
+	MaxBatchItems    int
+	MaxInputBytes    int64
+	MaxRequestBytes  int64
+	MaxResponseBytes int64
+	EgressPolicy     providerhttp.EgressPolicy
 }
 
 var (
@@ -120,6 +123,7 @@ type policyIdentity struct {
 	CredentialBinding      string                       `json:"credential_binding"`
 	DeploymentEpoch        string                       `json:"deployment_epoch,omitempty"`
 	ProviderRevisionHeader string                       `json:"provider_revision_header,omitempty"`
+	InputTypeMode          string                       `json:"input_type_mode,omitempty"`
 	RequestTimeoutNanos    int64                        `json:"request_timeout_nanos"`
 	MaxBatchItems          int                          `json:"max_batch_items"`
 	MaxInputBytes          int64                        `json:"max_input_bytes"`
@@ -152,6 +156,7 @@ type wireRequest struct {
 	Input          []string `json:"input"`
 	Model          string   `json:"model"`
 	EncodingFormat string   `json:"encoding_format"`
+	InputType      string   `json:"input_type,omitempty"`
 }
 
 type wireResponse struct {
@@ -184,6 +189,7 @@ func PolicyFingerprint(profile Profile) (string, error) {
 		Descriptor: descriptorIdentity, ModelInput: normalized.ModelInput,
 		CredentialBinding: normalized.SecretBinding, DeploymentEpoch: normalized.DeploymentEpoch,
 		ProviderRevisionHeader: normalized.ProviderRevisionHeader,
+		InputTypeMode:          normalized.InputTypeMode,
 		RequestTimeoutNanos:    int64(normalized.RequestTimeout), MaxBatchItems: normalized.MaxBatchItems,
 		MaxInputBytes: normalized.MaxInputBytes, MaxRequestBytes: normalized.MaxRequestBytes,
 		MaxResponseBytes: normalized.MaxResponseBytes,
@@ -289,7 +295,20 @@ func (client *Client) Embed(ctx context.Context, inputs []document.EmbeddingInpu
 		}
 		renderedBytes += int64(len(rendered[index]))
 	}
-	payload, err := json.Marshal(wireRequest{Input: rendered, Model: client.descriptor.Model, EncodingFormat: "float"})
+	inputType := ""
+	if client.profile.InputTypeMode == "passage_query" {
+		for _, input := range inputs {
+			roleType := "passage"
+			if input.Role == document.EmbeddingRoleQuery {
+				roleType = "query"
+			}
+			if inputType != "" && inputType != roleType {
+				return document.EmbeddingResult{}, errors.New("openaiembed: role-aware request cannot mix document and query inputs")
+			}
+			inputType = roleType
+		}
+	}
+	payload, err := json.Marshal(wireRequest{Input: rendered, Model: client.descriptor.Model, EncodingFormat: "float", InputType: inputType})
 	if err != nil {
 		return document.EmbeddingResult{}, errors.New("openaiembed: could not encode embedding request")
 	}
@@ -471,6 +490,9 @@ func normalizeProfile(profile Profile) (Profile, document.EmbeddingDescriptor, e
 	}
 	if profile.SecretBinding != "" && !validIdentityToken(profile.SecretBinding) {
 		return Profile{}, document.EmbeddingDescriptor{}, errors.New("openaiembed: secret binding is invalid")
+	}
+	if profile.InputTypeMode != "" && profile.InputTypeMode != "passage_query" {
+		return Profile{}, document.EmbeddingDescriptor{}, errors.New("openaiembed: input type mode is invalid")
 	}
 	if profile.EgressPolicy.Scheme != "" {
 		if profile.EgressPolicy.ConnectTimeout == 0 {

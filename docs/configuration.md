@@ -290,6 +290,7 @@ and must be supplied separately after restoring a vault.
 | Fields | Meaning |
 | --- | --- |
 | `adapter_contract` | `docbank-openai-compatible-embeddings/v1` for rendition chunks, or `docbank-voyage-embeddings/v1` for original files. |
+| `input_type_mode` | Optional OpenAI-compatible extension. `passage_query` sends `input_type: passage` for document chunks and `input_type: query` for semantic queries; omit it for standard endpoints. Mixed-role batches are rejected. The mode is part of the provider policy fingerprint. |
 | `endpoint`, `model_revision` | Exact provider endpoint and pinned revision. OpenAI-compatible endpoints are origins without a path; Voyage uses `https://api.voyageai.com/v1`. |
 | `deployment_epoch`, `provider_revision_header` | OpenAI-compatible runtimes require exactly one. The epoch must equal `model_revision`; a revision header must echo the pinned revision in every response. |
 | `capability_manifest` | Voyage requires an absolute path to a capability manifest matching its model, media policy, and descriptor. |

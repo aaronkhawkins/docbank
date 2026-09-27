@@ -49,6 +49,39 @@ type capturedRequest struct {
 	Input          []string `json:"input"`
 	Model          string   `json:"model"`
 	EncodingFormat string   `json:"encoding_format"`
+	InputType      string   `json:"input_type,omitempty"`
+}
+
+func TestEmbedSendsRoleAwareInputTypesOnlyWhenConfigured(t *testing.T) {
+	profile := testProfile(t, modelInput(t, document.ModelInputContractConfig{Profile: document.ModelInputProfileBGEM3}))
+	baselineFingerprint := profile.Descriptor.PolicyFingerprint
+	profile.InputTypeMode = "passage_query"
+	profile.Descriptor = descriptorFor(t, profile)
+	assert.NotEqual(t, baselineFingerprint, profile.Descriptor.PolicyFingerprint)
+
+	var seen []string
+	client := newTestClient(t, profile, nil, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var body capturedRequest
+		require.NoError(t, json.UnmarshalRead(request.Body, &body, json.RejectUnknownMembers(true)))
+		seen = append(seen, body.InputType)
+		return jsonResponse(request, http.StatusOK, singleVectorResponse("synthetic-model", []float32{1, 0, 0})), nil
+	}))
+	for _, input := range testInputs() {
+		_, err := client.Embed(t.Context(), []document.EmbeddingInput{input}, testAuthorization(profile.Descriptor))
+		require.NoError(t, err)
+	}
+	assert.Equal(t, []string{"passage", "query"}, seen)
+
+	_, err := client.Embed(t.Context(), testInputs(), testAuthorization(profile.Descriptor))
+	require.ErrorContains(t, err, "cannot mix document and query")
+	assert.Len(t, seen, 2)
+}
+
+func TestInputTypeModeRejectsUnknownValue(t *testing.T) {
+	profile := testProfile(t, modelInput(t, document.ModelInputContractConfig{Profile: document.ModelInputProfileBGEM3}))
+	profile.InputTypeMode = "document_query"
+	_, err := PolicyFingerprint(profile)
+	require.ErrorContains(t, err, "input type mode is invalid")
 }
 
 func TestEmbedAppliesExplicitModelInputProfilesAndRestoresResponseIndices(t *testing.T) {
