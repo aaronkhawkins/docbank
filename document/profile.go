@@ -552,8 +552,10 @@ func validateEmbeddingBinding(binding EmbeddingBindingV1, hasRendition bool) err
 	if err := validateBindingName(binding.Name, "name"); err != nil {
 		return err
 	}
-	if err := validateCredentialReference(binding.CredentialBinding, "embedding credential binding"); err != nil {
-		return err
+	if binding.CredentialBinding != "" {
+		if err := validateCredentialReference(binding.CredentialBinding, "embedding credential binding"); err != nil {
+			return err
+		}
 	}
 	if err := validateProviderDescriptor(binding.Descriptor); err != nil {
 		return fmt.Errorf("descriptor: %w", err)

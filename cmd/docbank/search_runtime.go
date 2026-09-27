@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"slices"
 	"time"
 
@@ -20,6 +22,39 @@ func newDaemonSearchService(cfg config.Config, backend *store.Store,
 	})
 	if err != nil {
 		return nil, err
+	}
+	if cfg.EmbeddingMaterialization.Enabled {
+		binding, err := cfg.EmbeddingBinding(cfg.EmbeddingMaterialization.Binding)
+		if err != nil {
+			return nil, err
+		}
+		var descriptor *document.EmbeddingDescriptor
+		for _, value := range runtimes.QueryDescriptors() {
+			if value.Fingerprint == binding.Descriptor.Fingerprint && value.ID == binding.Descriptor.ID {
+				descriptor = &value
+				break
+			}
+		}
+		if descriptor == nil {
+			return nil, errors.New("embedding materialization query runtime is unavailable")
+		}
+		return retrieval.NewServiceWithBindingResolver(searcher, func(ctx context.Context) (*retrieval.SemanticBinding, retrieval.FallbackReason, error) {
+			profileFingerprint, err := backend.FirstCurrentSemanticProfile(ctx, binding.Name, descriptor.Fingerprint)
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, retrieval.FallbackSemanticAuthorityUnavailable, nil
+			}
+			if err != nil {
+				return nil, "", err
+			}
+			return &retrieval.SemanticBinding{
+				ProcessingProfileFingerprint: profileFingerprint, BindingID: binding.Name, AcrossProfiles: true,
+				Authorization: document.EmbeddingAuthorization{
+					ProviderID: descriptor.ID, DescriptorFingerprint: descriptor.Fingerprint,
+					PolicyFingerprint: descriptor.PolicyFingerprint, MaxBatchItems: 1,
+					MaxInputBytes: binding.MaxInputBytes, MaxResponseBytes: binding.MaxResponseBytes,
+				},
+			}, "", nil
+		}), nil
 	}
 	binding, unavailable, err := configuredSemanticSearchBinding(cfg, runtimes)
 	if err != nil {

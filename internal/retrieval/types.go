@@ -152,4 +152,5 @@ type Query struct {
 	ProcessingProfileFingerprint string
 	BindingID                    string
 	Authorization                document.EmbeddingAuthorization
+	AcrossProfiles               bool
 }

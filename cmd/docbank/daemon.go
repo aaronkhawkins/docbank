@@ -216,6 +216,15 @@ func runServe(ctx context.Context) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("configuring embedding runtimes: %w", err)
 	}
+	if cfg.EmbeddingMaterialization.Enabled {
+		embeddingScanner, err := newRenditionEmbeddingScanner(cfg, s, blobs, embeddingRuntimeRegistry, logger)
+		if err != nil {
+			return fmt.Errorf("configuring embedding materialization: %w", err)
+		}
+		if err := jobSupervisor.Start("process:embedding-inputs", embeddingScanner.Run); err != nil {
+			return err
+		}
+	}
 	documentSearch, err := newDaemonSearchService(cfg, s, embeddingRuntimeRegistry)
 	if err != nil {
 		return fmt.Errorf("configuring document search: %w", err)

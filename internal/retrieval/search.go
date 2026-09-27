@@ -35,6 +35,14 @@ type SemanticBackend interface {
 	ReleaseVectorIndexGeneration(ctx context.Context, leaseID string, fencingToken int64, at time.Time) error
 }
 
+type CrossProfileSemanticBackend interface {
+	AcquireSemanticSearchAuthorityAcrossProfiles(ctx context.Context, profile, binding, owner string, at time.Time,
+		duration time.Duration, options store.SearchOptions) (store.SemanticSearchAuthority, error)
+	ResolveSemanticCandidatesAcrossProfiles(ctx context.Context, profile, binding string, inputKind document.EmbeddingInputKind,
+		vectorSpace, sourceManifest string, neighbors []vectorindex.Neighbor, limit int,
+		options store.SearchOptions) (store.SemanticSearchResolution, error)
+}
+
 type QueryEncoderResolver interface {
 	ResolveQueryEncoder(ctx context.Context, descriptor document.EmbeddingDescriptor) (document.EmbeddingProvider, error)
 }
@@ -166,9 +174,23 @@ func (searcher *Searcher) semantic(ctx context.Context, query Query) (
 			&semanticUnavailableError{reason: FallbackSemanticNotConfigured,
 				cause: errors.New("semantic retrieval is not configured")}
 	}
-	authority, err := backend.AcquireSemanticSearchAuthority(ctx,
-		query.ProcessingProfileFingerprint, query.BindingID, searcher.owner,
-		searcher.clock().UTC(), searcher.leaseDuration, query.Scope)
+	var authority store.SemanticSearchAuthority
+	var err error
+	if query.AcrossProfiles {
+		cross, supported := searcher.backend.(CrossProfileSemanticBackend)
+		if !supported {
+			return nil, Coverage{State: CoverageUnknown}, document.RetrievalPolicyV1{}, false,
+				&semanticUnavailableError{reason: FallbackSemanticNotConfigured,
+					cause: errors.New("cross-profile retrieval is unavailable")}
+		}
+		authority, err = cross.AcquireSemanticSearchAuthorityAcrossProfiles(ctx,
+			query.ProcessingProfileFingerprint, query.BindingID, searcher.owner,
+			searcher.clock().UTC(), searcher.leaseDuration, query.Scope)
+	} else {
+		authority, err = backend.AcquireSemanticSearchAuthority(ctx,
+			query.ProcessingProfileFingerprint, query.BindingID, searcher.owner,
+			searcher.clock().UTC(), searcher.leaseDuration, query.Scope)
+	}
 	if err != nil {
 		if errors.Is(err, store.ErrSemanticAuthorityUnavailable) {
 			err = &semanticUnavailableError{reason: FallbackSemanticAuthorityUnavailable, cause: err}
@@ -245,9 +267,20 @@ func (searcher *Searcher) semantic(ctx context.Context, query Query) (
 		return nil, coverage, policy, false, err
 	}
 	rawTruncated := metadata.RowCount > rawLimit
-	resolution, err := backend.ResolveSemanticCandidates(ctx, query.ProcessingProfileFingerprint,
-		query.BindingID, authority.InputKind, authority.VectorSpace.ID, stored.SourceManifestChecksum,
-		neighbors, semanticLimit, query.Scope)
+	var resolution store.SemanticSearchResolution
+	if query.AcrossProfiles {
+		cross, supported := searcher.backend.(CrossProfileSemanticBackend)
+		if !supported {
+			return nil, coverage, policy, false, errors.New("cross-profile semantic search is unsupported")
+		}
+		resolution, err = cross.ResolveSemanticCandidatesAcrossProfiles(ctx, query.ProcessingProfileFingerprint,
+			query.BindingID, authority.InputKind, authority.VectorSpace.ID, stored.SourceManifestChecksum,
+			neighbors, semanticLimit, query.Scope)
+	} else {
+		resolution, err = backend.ResolveSemanticCandidates(ctx, query.ProcessingProfileFingerprint,
+			query.BindingID, authority.InputKind, authority.VectorSpace.ID, stored.SourceManifestChecksum,
+			neighbors, semanticLimit, query.Scope)
+	}
 	if err != nil {
 		return nil, coverage, policy, false, err
 	}

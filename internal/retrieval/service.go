@@ -14,14 +14,22 @@ type SemanticBinding struct {
 	ProcessingProfileFingerprint string
 	BindingID                    string
 	Authorization                document.EmbeddingAuthorization
+	AcrossProfiles               bool
 }
+
+type SemanticBindingResolver func(context.Context) (*SemanticBinding, FallbackReason, error)
 
 // Service keeps public requests free of internal fingerprints while allowing
 // lexical operation when no semantic binding is executable.
 type Service struct {
 	searcher          *Searcher
 	binding           *SemanticBinding
+	resolveBinding    SemanticBindingResolver
 	unavailableReason FallbackReason
+}
+
+func NewServiceWithBindingResolver(searcher *Searcher, resolver SemanticBindingResolver) *Service {
+	return &Service{searcher: searcher, resolveBinding: resolver, unavailableReason: FallbackSemanticNotConfigured}
 }
 
 func NewService(searcher *Searcher, binding *SemanticBinding, unavailableReason FallbackReason) *Service {
@@ -43,13 +51,26 @@ func (service *Service) Search(ctx context.Context, query Query) (Report, error)
 		query.ProcessingProfileFingerprint = ""
 		query.BindingID = ""
 		query.Authorization = document.EmbeddingAuthorization{}
+		query.AcrossProfiles = false
 		return service.searcher.Search(ctx, query)
 	}
 	if strings.TrimSpace(query.Text) == "" {
 		return Report{}, errors.New("retrieval query text is required for semantic modes")
 	}
-	if service.binding == nil {
-		unavailable := &semanticUnavailableError{reason: service.unavailableReason,
+	binding := service.binding
+	reason := service.unavailableReason
+	if service.resolveBinding != nil {
+		var err error
+		binding, reason, err = service.resolveBinding(ctx)
+		if err != nil {
+			return Report{}, err
+		}
+	}
+	if reason == "" {
+		reason = FallbackSemanticNotConfigured
+	}
+	if binding == nil {
+		unavailable := &semanticUnavailableError{reason: reason,
 			cause: errors.New("no semantic binding is executable")}
 		if requested == ModeSemantic {
 			return Report{}, unavailable
@@ -60,11 +81,12 @@ func (service *Service) Search(ctx context.Context, query Query) (Report, error)
 			return Report{}, err
 		}
 		report.RequestedMode = requested
-		report.Fallback = Fallback{Applied: true, Reason: service.unavailableReason}
+		report.Fallback = Fallback{Applied: true, Reason: reason}
 		return report, nil
 	}
-	query.ProcessingProfileFingerprint = service.binding.ProcessingProfileFingerprint
-	query.BindingID = service.binding.BindingID
-	query.Authorization = service.binding.Authorization
+	query.ProcessingProfileFingerprint = binding.ProcessingProfileFingerprint
+	query.BindingID = binding.BindingID
+	query.Authorization = binding.Authorization
+	query.AcrossProfiles = binding.AcrossProfiles
 	return service.searcher.Search(ctx, query)
 }

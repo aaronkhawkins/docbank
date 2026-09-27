@@ -203,6 +203,56 @@ func (s *Store) GrantConsent(
 	return grant, nil
 }
 
+// EnsureInitialConsent installs an exact grant once for a locally configured
+// processing policy. A revoked scope is never silently reauthorized.
+func (s *Store) EnsureInitialConsent(ctx context.Context, request ProcessingConsentGrantRequest) error {
+	s.providerEgressMu.Lock()
+	defer s.providerEgressMu.Unlock()
+	authority, err := normalizeConsentAuthority(ProviderOperationAuthorizationRequest{
+		Principal: request.Principal, Scope: request.Scope,
+		ProfileFingerprint: request.ProfileFingerprint, DisclosureFingerprint: request.DisclosureFingerprint,
+		InputClasses: request.InputClasses, RetainedArtifactClasses: request.RetainedArtifactClasses,
+	})
+	if err != nil {
+		return err
+	}
+	return s.withStorageTx(ctx, func(tx *sql.Tx) error {
+		incarnationID, err := currentProcessingIncarnationIDTx(ctx, tx)
+		if err != nil {
+			return err
+		}
+		fence, err := consentRevocationFenceTx(ctx, tx, s.vaultID, incarnationID, authority.principal, authority.scope)
+		if err != nil {
+			return err
+		}
+		if fence != 0 {
+			return ErrProcessingConsentRevoked
+		}
+		var count int
+		err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM processing_consent_grants
+			WHERE vault_uid=? AND incarnation_id=? AND principal=? AND scope=?
+			AND profile_fingerprint=? AND disclosure_fingerprint=? AND input_classes_json=?
+			AND retained_classes_json=? AND revocation_fence=0 AND expires_at IS NULL`,
+			s.vaultID, incarnationID, authority.principal, authority.scope, authority.profile,
+			authority.disclosure, authority.inputsJSON, authority.retainedJSON).Scan(&count)
+		if err != nil || count != 0 {
+			return err
+		}
+		id, err := newUUIDv4()
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO processing_consent_grants(
+			grant_id,vault_uid,incarnation_id,principal,scope,profile_fingerprint,
+			disclosure_fingerprint,input_classes_json,retained_classes_json,
+			revocation_fence,issued_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,0,?,NULL)`,
+			id, s.vaultID, incarnationID, authority.principal, authority.scope,
+			authority.profile, authority.disclosure, authority.inputsJSON,
+			authority.retainedJSON, time.Now().UTC().Format(timestampLayout))
+		return err
+	})
+}
+
 func (s *Store) RevokeConsent(
 	ctx context.Context, request ProcessingConsentRevocationRequest,
 ) (ProcessingConsentRevocation, error) {

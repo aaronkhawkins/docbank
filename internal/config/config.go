@@ -226,6 +226,14 @@ type ProcessingProfileConfig struct {
 	TrustBoundary               string   `toml:"trust_boundary"`
 }
 
+// EmbeddingMaterializationConfig enables Docbank-owned input creation from
+// verified current renditions. Enabling it is an explicit local disclosure
+// decision for the selected embedding runtime.
+type EmbeddingMaterializationConfig struct {
+	Enabled bool   `toml:"enabled"`
+	Binding string `toml:"binding"`
+}
+
 // ResolvedProcessingProfile pairs the portable document profile with the
 // executable retrieval policy built from the same limits. The retrieval
 // limits are copied into the document profile, so they are part of the
@@ -238,17 +246,18 @@ type ResolvedProcessingProfile struct {
 
 // Config is the full contents of config.toml.
 type Config struct {
-	Server             ServerConfig                       `toml:"server"`
-	Web                WebConfig                          `toml:"web"`
-	Backup             BackupConfig                       `toml:"backup"`
-	Storage            StorageConfig                      `toml:"storage"`
-	StoreBindings      map[string]StoreBindingConfig      `toml:"store_bindings"`
-	RenditionProfiles  map[string]RenditionProfileConfig  `toml:"rendition_profiles"`
-	EmbeddingProfiles  map[string]EmbeddingProfileConfig  `toml:"embedding_profiles"`
-	CredentialBindings map[string]CredentialBindingConfig `toml:"credential_bindings"`
-	RetrievalProfiles  map[string]RetrievalProfileConfig  `toml:"retrieval_profiles"`
-	ProcessingProfiles map[string]ProcessingProfileConfig `toml:"processing_profiles"`
-	Watches            []WatchConfig                      `toml:"watch"`
+	Server                   ServerConfig                       `toml:"server"`
+	Web                      WebConfig                          `toml:"web"`
+	Backup                   BackupConfig                       `toml:"backup"`
+	Storage                  StorageConfig                      `toml:"storage"`
+	StoreBindings            map[string]StoreBindingConfig      `toml:"store_bindings"`
+	RenditionProfiles        map[string]RenditionProfileConfig  `toml:"rendition_profiles"`
+	EmbeddingProfiles        map[string]EmbeddingProfileConfig  `toml:"embedding_profiles"`
+	CredentialBindings       map[string]CredentialBindingConfig `toml:"credential_bindings"`
+	RetrievalProfiles        map[string]RetrievalProfileConfig  `toml:"retrieval_profiles"`
+	ProcessingProfiles       map[string]ProcessingProfileConfig `toml:"processing_profiles"`
+	EmbeddingMaterialization EmbeddingMaterializationConfig     `toml:"embedding_materialization"`
+	Watches                  []WatchConfig                      `toml:"watch"`
 }
 
 // Default returns the configuration used when config.toml is absent.
@@ -449,6 +458,15 @@ func (c Config) Validate() error {
 	if err := validateProcessingProfiles(c); err != nil {
 		return err
 	}
+	if c.EmbeddingMaterialization.Enabled {
+		binding, exists := c.EmbeddingProfiles[c.EmbeddingMaterialization.Binding]
+		if !exists || binding.Runtime == nil || binding.InputKind != string(document.EmbeddingInputRenditionChunk) ||
+			binding.Chunk.Tokenizer != "utf8-rune" || binding.Chunk.TokenizerRevision != "v1" {
+			return errors.New("[embedding_materialization] binding requires a configured rendition-chunk runtime with utf8-rune/v1")
+		}
+	} else if c.EmbeddingMaterialization.Binding != "" {
+		return errors.New("[embedding_materialization] binding requires enabled=true")
+	}
 	for _, watch := range c.Watches {
 		if err := validateWatch(watch); err != nil {
 			return err
@@ -463,6 +481,18 @@ func (c Config) Validate() error {
 	}
 	return fmt.Errorf("[server] bind_addr %q: the API is plain HTTP, so binds are "+
 		"loopback-only; reach a remote docbank through an SSH tunnel or VPN", host)
+}
+
+// EmbeddingBinding resolves one validated, portable binding by its configured name.
+func (c Config) EmbeddingBinding(name string) (document.EmbeddingBindingV1, error) {
+	profile, exists := c.EmbeddingProfiles[name]
+	if !exists {
+		return document.EmbeddingBindingV1{}, errors.New("embedding binding is unavailable")
+	}
+	if err := validateEmbeddingProfileConfig(profile, "embedding binding"); err != nil {
+		return document.EmbeddingBindingV1{}, err
+	}
+	return embeddingDocumentBinding(name, profile), nil
 }
 
 var storeBindingNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
@@ -497,7 +527,7 @@ func validateProcessingProfiles(c Config) error {
 		if err := validateEmbeddingProfileConfig(profile, prefix); err != nil {
 			return err
 		}
-		if profile.Runtime != nil {
+		if profile.Runtime != nil && profile.CredentialBinding != "" {
 			credentialName := strings.TrimPrefix(profile.CredentialBinding, "credential:")
 			if _, ok := c.CredentialBindings[credentialName]; !ok {
 				return fmt.Errorf("%s runtime credential binding %q is not defined", prefix, profile.CredentialBinding)
@@ -610,7 +640,7 @@ func validateEmbeddingProfileConfig(profile EmbeddingProfileConfig, prefix strin
 			return fmt.Errorf("%s %s must be a lowercase SHA-256 value", prefix, field)
 		}
 	}
-	if !credentialReferencePattern.MatchString(profile.CredentialBinding) {
+	if profile.CredentialBinding != "" && !credentialReferencePattern.MatchString(profile.CredentialBinding) {
 		return fmt.Errorf("%s credential_binding must use credential:<name>", prefix)
 	}
 	if profile.Activation != string(document.EmbeddingOptional) && profile.Activation != string(document.EmbeddingRequired) {
@@ -649,6 +679,9 @@ func validateEmbeddingProfileConfig(profile EmbeddingProfileConfig, prefix strin
 	}
 	if profile.Runtime != nil {
 		runtime := profile.Runtime
+		if runtime.AdapterContract != "docbank-openai-compatible-embeddings/v1" && profile.CredentialBinding == "" {
+			return fmt.Errorf("%s credential_binding is required for this adapter", prefix)
+		}
 		if runtime.AdapterContract != "docbank-openai-compatible-embeddings/v1" &&
 			runtime.AdapterContract != "docbank-voyage-embeddings/v1" {
 			return fmt.Errorf("%s runtime adapter_contract is unsupported", prefix)

@@ -62,7 +62,7 @@ func configureEmbeddingRuntimes(cfg config.Config, blobs embeddingRuntimeBlobSto
 			continue
 		}
 		_, ok := secrets.variables[configured.CredentialBinding]
-		if !ok {
+		if configured.CredentialBinding != "" && !ok {
 			return nil, fmt.Errorf("embedding credential %q is not configured", configured.CredentialBinding)
 		}
 		modelInput, err := cfg.EmbeddingModelInput(name)
@@ -86,7 +86,11 @@ func configureEmbeddingRuntimes(cfg config.Config, blobs embeddingRuntimeBlobSto
 			descriptor, profile, err = finalizeOpenAIEmbeddingDescriptor(profile)
 			if err == nil {
 				profile.Descriptor = descriptor
-				provider, err = openaiembed.New(profile, secrets, &http.Client{})
+				var resolver openaiembed.SecretResolver
+				if configured.CredentialBinding != "" {
+					resolver = secrets
+				}
+				provider, err = openaiembed.New(profile, resolver, &http.Client{})
 			}
 			classify = classifyOpenAIEmbeddingError
 		case voyageEmbeddingAdapter:

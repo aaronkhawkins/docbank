@@ -148,6 +148,21 @@ func TestConfigureEmbeddingRuntimesRegistersSyntheticLoopbackOpenAI(t *testing.T
 	assert.Equal(t, []string{final.Fingerprint}, registry.Fingerprints())
 	classification, _ := classifyOpenAIEmbeddingError(fmt.Errorf("%w: local request envelope", openaiembed.ErrCapacityResponse))
 	assert.Equal(t, processing.EmbeddingProviderCapacity, classification)
+	noAuth := profile
+	noAuth.CredentialBinding = ""
+	noAuthDescriptor := configuredEmbeddingDescriptor(noAuth, contract)
+	noAuthFinal, _, err := finalizeOpenAIEmbeddingDescriptor(openaiembed.Profile{Origin: server.URL,
+		Descriptor: noAuthDescriptor, ModelInput: contract, DeploymentEpoch: noAuth.Runtime.DeploymentEpoch,
+		RequestTimeout: noAuth.Runtime.RequestTimeout.Std(), MaxBatchItems: noAuth.MaxBatchItems,
+		MaxInputBytes: noAuth.MaxInputBytes, MaxRequestBytes: noAuth.Runtime.MaxRequestBytes,
+		MaxResponseBytes: noAuth.MaxResponseBytes, EgressPolicy: configuredEmbeddingEgress(*noAuth.Runtime)})
+	require.NoError(t, err)
+	noAuth.DescriptorFingerprint = noAuthFinal.Fingerprint
+	cfg.EmbeddingProfiles = map[string]config.EmbeddingProfileConfig{"semantic": noAuth}
+	require.NoError(t, cfg.Validate())
+	noAuthRegistry, err := configureEmbeddingRuntimes(cfg, unavailableEmbeddingBlobs{}, t.TempDir())
+	require.NoError(t, err)
+	assert.Equal(t, []string{noAuthFinal.Fingerprint}, noAuthRegistry.Fingerprints())
 }
 
 func TestConfigureEmbeddingRuntimesRegistersCapabilityAttestedVoyageOriginal(t *testing.T) {
