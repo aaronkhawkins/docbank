@@ -294,6 +294,21 @@ type SemanticSearchAuthority struct {
 func (s *Store) AcquireSemanticSearchAuthority(ctx context.Context, profileFingerprint,
 	bindingID, owner string, at time.Time, duration time.Duration, opts SearchOptions,
 ) (SemanticSearchAuthority, error) {
+	return s.acquireSemanticSearchAuthority(ctx, profileFingerprint, bindingID, owner, at, duration, opts, false)
+}
+
+// AcquireSemanticSearchAuthorityAcrossProfiles uses one exact anchor profile
+// for query policy while counting completed heads in the same vector space
+// across current rendition profiles.
+func (s *Store) AcquireSemanticSearchAuthorityAcrossProfiles(ctx context.Context, profileFingerprint,
+	bindingID, owner string, at time.Time, duration time.Duration, opts SearchOptions,
+) (SemanticSearchAuthority, error) {
+	return s.acquireSemanticSearchAuthority(ctx, profileFingerprint, bindingID, owner, at, duration, opts, true)
+}
+
+func (s *Store) acquireSemanticSearchAuthority(ctx context.Context, profileFingerprint,
+	bindingID, owner string, at time.Time, duration time.Duration, opts SearchOptions, acrossProfiles bool,
+) (SemanticSearchAuthority, error) {
 	normalized, err := s.normalizeSearchOptions(ctx, opts)
 	if err != nil {
 		return SemanticSearchAuthority{}, err
@@ -343,7 +358,7 @@ func (s *Store) AcquireSemanticSearchAuthority(ctx context.Context, profileFinge
 		return SemanticSearchAuthority{}, ErrVectorIndexSourceStale
 	}
 	required, complete, err := s.semanticSearchCoverage(ctx, profileFingerprint,
-		bindingID, binding.InputKind, vectorSpaceID, normalized)
+		bindingID, binding.InputKind, vectorSpaceID, normalized, acrossProfiles)
 	if err != nil {
 		release()
 		return SemanticSearchAuthority{}, err
@@ -362,19 +377,19 @@ func semanticAuthorityUnavailable(err error) error {
 }
 
 func (s *Store) semanticSearchCoverage(ctx context.Context, profileFingerprint, bindingID string,
-	inputKind document.EmbeddingInputKind, vectorSpaceID string, opts SearchOptions,
+	inputKind document.EmbeddingInputKind, vectorSpaceID string, opts SearchOptions, acrossProfiles bool,
 ) (required, complete int, retErr error) {
 	err := s.withStorageTx(ctx, func(tx *sql.Tx) error {
 		var coverageErr error
 		required, complete, coverageErr = semanticSearchCoverageTx(ctx, tx, profileFingerprint,
-			bindingID, inputKind, vectorSpaceID, opts)
+			bindingID, inputKind, vectorSpaceID, opts, acrossProfiles)
 		return coverageErr
 	})
 	return required, complete, err
 }
 
 func semanticSearchCoverageTx(ctx context.Context, tx metadataQuerier, profileFingerprint, bindingID string,
-	inputKind document.EmbeddingInputKind, vectorSpaceID string, opts SearchOptions,
+	inputKind document.EmbeddingInputKind, vectorSpaceID string, opts SearchOptions, acrossProfiles bool,
 ) (required, complete int, retErr error) {
 	filterSQL, filterArgs := searchFilterSQL(opts)
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+nodeFrom+`
@@ -382,7 +397,7 @@ func semanticSearchCoverageTx(ctx context.Context, tx metadataQuerier, profileFi
 		filterArgs...).Scan(&required); err != nil {
 		return 0, 0, err
 	}
-	args := []any{profileFingerprint, bindingID, inputKind, vectorSpaceID}
+	args := []any{acrossProfiles, profileFingerprint, bindingID, inputKind, vectorSpaceID}
 	args = append(args, filterArgs...)
 	err := tx.QueryRowContext(ctx, `SELECT COUNT(DISTINCT n.id) FROM `+nodeFrom+`
 		JOIN embedding_heads eh ON eh.content_version_id=cv.version_id
@@ -392,7 +407,7 @@ func semanticSearchCoverageTx(ctx context.Context, tx metadataQuerier, profileFi
 		 AND es.profile_fingerprint=eh.profile_fingerprint
 		JOIN embedding_input_generations eig ON eig.generation_id=es.input_generation_id
 		WHERE n.kind='file' AND n.trashed_at IS NULL
-		  AND eh.profile_fingerprint=? AND eh.binding_id=? AND eh.input_kind=?
+		  AND (? OR eh.profile_fingerprint=?) AND eh.binding_id=? AND eh.input_kind=?
 		  AND eh.vector_space_id=?
 		  AND (eh.input_kind='original_file' OR EXISTS(
 		    SELECT 1 FROM rendition_heads rh
@@ -408,6 +423,24 @@ func semanticSearchCoverageTx(ctx context.Context, tx metadataQuerier, profileFi
 func (s *Store) ResolveSemanticCandidates(ctx context.Context, profileFingerprint, bindingID string,
 	inputKind document.EmbeddingInputKind, vectorSpaceID, expectedSourceManifest string,
 	neighbors []vectorindex.Neighbor, limit int, opts SearchOptions,
+) (_ SemanticSearchResolution, retErr error) {
+	return s.resolveSemanticCandidates(ctx, profileFingerprint, bindingID, inputKind,
+		vectorSpaceID, expectedSourceManifest, neighbors, limit, opts, false)
+}
+
+// ResolveSemanticCandidatesAcrossProfiles accepts only exact live heads in
+// the selected vector space, regardless of their rendition profile identity.
+func (s *Store) ResolveSemanticCandidatesAcrossProfiles(ctx context.Context, profileFingerprint, bindingID string,
+	inputKind document.EmbeddingInputKind, vectorSpaceID, expectedSourceManifest string,
+	neighbors []vectorindex.Neighbor, limit int, opts SearchOptions,
+) (SemanticSearchResolution, error) {
+	return s.resolveSemanticCandidates(ctx, profileFingerprint, bindingID, inputKind,
+		vectorSpaceID, expectedSourceManifest, neighbors, limit, opts, true)
+}
+
+func (s *Store) resolveSemanticCandidates(ctx context.Context, profileFingerprint, bindingID string,
+	inputKind document.EmbeddingInputKind, vectorSpaceID, expectedSourceManifest string,
+	neighbors []vectorindex.Neighbor, limit int, opts SearchOptions, acrossProfiles bool,
 ) (_ SemanticSearchResolution, retErr error) {
 	if err := validateCatalogSHA256(vectorSpaceID, "semantic search vector-space ID"); err != nil {
 		return SemanticSearchResolution{}, err
@@ -437,12 +470,12 @@ func (s *Store) ResolveSemanticCandidates(ctx context.Context, profileFingerprin
 		}
 		result.SourceManifestChecksum = current.ManifestChecksum
 		result.ScopedDocuments, result.CompleteDocuments, err = semanticSearchCoverageTx(ctx, tx,
-			profileFingerprint, bindingID, inputKind, vectorSpaceID, normalized)
+			profileFingerprint, bindingID, inputKind, vectorSpaceID, normalized, acrossProfiles)
 		if err != nil {
 			return err
 		}
 		eligible, loadErr := loadSemanticEligibility(ctx, tx, profileFingerprint, bindingID,
-			inputKind, vectorSpaceID, filterSQL, filterArgs)
+			inputKind, vectorSpaceID, filterSQL, filterArgs, acrossProfiles)
 		if loadErr != nil {
 			return loadErr
 		}
@@ -473,9 +506,9 @@ type semanticEligibilityKey struct {
 // exact index's ordered neighbors are reduced. Its result is bounded by the
 // active vector-space catalog (at most one million rows), not by neighbor rank.
 func loadSemanticEligibility(ctx context.Context, tx metadataQuerier, profileFingerprint, bindingID string,
-	inputKind document.EmbeddingInputKind, vectorSpaceID, filterSQL string, filterArgs []any,
+	inputKind document.EmbeddingInputKind, vectorSpaceID, filterSQL string, filterArgs []any, acrossProfiles bool,
 ) (_ map[semanticEligibilityKey]SemanticSearchCandidate, retErr error) {
-	args := append([]any{vectorSpaceID, profileFingerprint, bindingID, inputKind}, filterArgs...)
+	args := append([]any{vectorSpaceID, acrossProfiles, profileFingerprint, bindingID, inputKind}, filterArgs...)
 	rows, err := tx.QueryContext(ctx, `SELECT n.id,n.revision,n.current_version_id,
 			es.embedding_set_id,es.input_generation_id,es.input_kind,
 			evr.vector_set_id,evr.input_id,evr.checksum
@@ -490,7 +523,7 @@ func loadSemanticEligibility(ctx context.Context, tx metadataQuerier, profileFin
 		 AND egi.input_id=evr.input_id AND egi.rendered_checksum=evr.checksum
 		JOIN embedding_input_generations eig ON eig.generation_id=es.input_generation_id
 		WHERE es.vector_space_id=?
-		  AND es.profile_fingerprint=? AND es.binding_id=? AND es.input_kind=?
+		  AND (? OR es.profile_fingerprint=?) AND es.binding_id=? AND es.input_kind=?
 		  AND n.current_version_id=es.content_version_id AND n.trashed_at IS NULL
 		  AND (es.input_kind='original_file' OR EXISTS(
 		    SELECT 1 FROM rendition_heads rh

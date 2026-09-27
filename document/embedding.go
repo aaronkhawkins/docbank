@@ -379,6 +379,24 @@ func validateEmbeddingDescriptor(descriptor EmbeddingDescriptor) error {
 	return nil
 }
 
+// Model IDs from operator-hosted OpenAI-compatible endpoints may be
+// vendor-qualified (for example vendor/model). Each path component remains a
+// bounded stable token; path traversal and URL syntax are not accepted.
+func validateModelIdentity(value, subject string) error {
+	if len(value) == 0 || len(value) > 128 {
+		return fmt.Errorf("%s must contain 1-128 characters", subject)
+	}
+	for part := range strings.SplitSeq(value, "/") {
+		if err := validateStableToken(part, subject, 128); err != nil {
+			return err
+		}
+		if part == "." || part == ".." {
+			return fmt.Errorf("%s contains unsupported path component", subject)
+		}
+	}
+	return nil
+}
+
 func validateEmbeddingDescriptorFields(descriptor EmbeddingDescriptor) error {
 	if err := validateStableToken(descriptor.ID, "embedding descriptor ID", 128); err != nil {
 		return err
@@ -395,7 +413,7 @@ func validateEmbeddingDescriptorFields(descriptor EmbeddingDescriptor) error {
 		return errors.New("embedding descriptor trust boundary is invalid")
 	}
 	for _, field := range []struct{ name, value string }{{"embedding model", descriptor.Model}, {"embedding model revision", descriptor.ModelRevision}} {
-		if err := validateStableToken(field.value, field.name, 128); err != nil {
+		if err := validateModelIdentity(field.value, field.name); err != nil {
 			return err
 		}
 	}

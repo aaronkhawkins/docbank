@@ -106,6 +106,15 @@ func TestResolveSemanticCandidatesIsolatesSharedVectorSpace(t *testing.T) {
 			}
 		})
 	}
+	across, err := s.ResolveSemanticCandidatesAcrossProfiles(t.Context(), otherProfile.Fingerprint,
+		"optional", document.EmbeddingInputOriginalFile, record.VectorSpace.ID,
+		source.ManifestChecksum, []vectorindex.Neighbor{{
+			SetID: record.VectorSet.ID, InputKey: versionID,
+			InputChecksum: record.InputGeneration.Inputs[0].RenderedChecksum, Score: 0.9,
+		}}, 1, SearchOptions{})
+	require.NoError(t, err)
+	require.Len(t, across.Candidates, 1)
+	assert.Equal(t, record.ID, across.Candidates[0].EmbeddingSetID)
 }
 
 func TestResolveSemanticCandidatesRejectsStaleSourceManifest(t *testing.T) {
@@ -215,6 +224,17 @@ func TestAcquireSemanticSearchAuthorityUsesStoredDescriptorAndCoverage(t *testin
 	assert.Equal(t, stored.ID, authority.Lease.Generation.ID)
 	require.NoError(t, s.ReleaseVectorIndexGeneration(t.Context(), authority.Lease.ID,
 		authority.Lease.FencingToken, now))
+	otherProfile := embeddingCatalogProfileVariant(t)
+	require.NoError(t, s.withStorageTx(t.Context(), func(tx *sql.Tx) error {
+		return ensureProcessingProfileTx(t.Context(), tx, otherProfile)
+	}))
+	across, err := s.AcquireSemanticSearchAuthorityAcrossProfiles(t.Context(), otherProfile.Fingerprint,
+		record.BindingID, "retrieval-across", now, time.Minute, SearchOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, 1, across.CompleteDocuments)
+	assert.Equal(t, stored.ID, across.Lease.Generation.ID)
+	require.NoError(t, s.ReleaseVectorIndexGeneration(t.Context(), across.Lease.ID,
+		across.Lease.FencingToken, now))
 }
 
 func TestSearchExplainedLexicalCandidatesCitesActiveRenditionSegment(t *testing.T) {

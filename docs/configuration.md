@@ -272,6 +272,11 @@ credential_binding = "credential:embedding-primary"
 # The remaining pinned profile fields are also required.
 ```
 
+For an operator-controlled OpenAI-compatible endpoint that requires no bearer
+token, omit `credential_binding` and the corresponding credential mapping. The
+runtime still enforces its exact endpoint and allowed CIDRs. Other embedding
+adapters continue to require a credential binding.
+
 A missing or empty secret does not prevent daemon startup or ordinary document
 operations. Affected embedding jobs record an authorization failure and remain
 eligible for recovery. Secrets are resolved for each request from the running
@@ -310,6 +315,31 @@ current live document versions. With no eligible runtime, or with more than one
 eligible runtime, explicit semantic search reports that it is unavailable while
 lexical search remains healthy; hybrid search reports a lexical fallback. The
 daemon never guesses between bindings.
+
+For existing supplied-OCR renditions, `[embedding_materialization]` can
+attach a configured `rendition_chunk` embedding binding to each current
+rendition with retained normalized evidence. The daemon reuses the verified
+rendition build, creates canonical embedding inputs, and queues its existing
+embedding worker. It scans on startup and each minute for new or changed
+renditions. The binding's tokenizer must be `utf8-rune/v1`; profiles without
+normalized evidence are skipped. It does not convert filename-only catalog
+entries into semantic evidence. Enable it separately in each vault:
+
+```toml
+[embedding_materialization]
+enabled = true
+binding = "semantic"
+```
+
+The selected runtime must be query-capable. Semantic retrieval uses completed
+current embedding heads for this binding and vector space across the derived
+rendition profiles, while exact-profile search remains the default for other
+configurations. The first scan grants the local operator's exact-profile
+consent for each eligible derived profile; an existing revocation fence is
+respected and prevents automatic regrant. Revocation stops future embedding
+operations; it does not delete already retained vector sets or hide them from
+authorized search. Removing retained vectors requires the vault's separate
+retention workflow.
 
 Query text is sent to a configured provider only for an explicit `semantic` or
 `hybrid` request made with a master API credential. `auto`, omitted-mode, and

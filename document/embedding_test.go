@@ -15,6 +15,21 @@ import (
 	"go.kenn.io/docbank/document"
 )
 
+func TestEmbeddingDescriptorAcceptsQualifiedModelIdentity(t *testing.T) {
+	base := testEmbeddingDescriptor(t)
+	base.Model = "vendor/model-name"
+	base.ModelRevision = "vendor/checkpoint-bf16"
+	base.Fingerprint = ""
+	_, err := document.NewEmbeddingDescriptor(base)
+	require.NoError(t, err)
+	for _, invalid := range []string{"vendor//model", "../model", "vendor/model?key=value"} {
+		candidate := base
+		candidate.Model = invalid
+		_, err := document.NewEmbeddingDescriptor(candidate)
+		require.Error(t, err)
+	}
+}
+
 // This test fails if execution accepts a response whose keys, order, or vector
 // shape no longer exactly represent the authorized request.
 func TestEmbeddingContractRejectsMalformedProviderResult(t *testing.T) {

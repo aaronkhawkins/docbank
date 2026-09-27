@@ -39,6 +39,21 @@ func TestProcessingConsentAuthorizesOnlyExactCurrentGrant(t *testing.T) {
 	assert.Equal(t, grant.RevocationFence, authorization.RevocationFence)
 }
 
+func TestEnsureInitialConsentIsIdempotentAndRespectsRevocation(t *testing.T) {
+	s := newTestStore(t)
+	request := testProviderAuthorizationRequest()
+	grant := grantRequestForAuthorization(request, nil)
+	require.NoError(t, s.EnsureInitialConsent(t.Context(), grant))
+	require.NoError(t, s.EnsureInitialConsent(t.Context(), grant))
+	_, err := s.AuthorizeProviderOperation(t.Context(), request)
+	require.NoError(t, err)
+	_, err = s.RevokeConsent(t.Context(), ProcessingConsentRevocationRequest{
+		Principal: request.Principal, Scope: request.Scope,
+	})
+	require.NoError(t, err)
+	require.ErrorIs(t, s.EnsureInitialConsent(t.Context(), grant), ErrProcessingConsentRevoked)
+}
+
 func TestProcessingConsentRejectsExpiredAndDriftedOperations(t *testing.T) {
 	tests := map[string]func(ProviderOperationAuthorizationRequest) ProviderOperationAuthorizationRequest{
 		"profile drift including endpoint or deployment epoch": func(r ProviderOperationAuthorizationRequest) ProviderOperationAuthorizationRequest {
