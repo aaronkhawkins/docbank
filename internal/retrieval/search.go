@@ -157,6 +157,7 @@ func (searcher *Searcher) hybrid(ctx context.Context, query Query, requested Mod
 	lexicalQuery := query
 	lexicalQuery.Limit = policy.LexicalLimit
 	lexicalQuery.Offset = 0
+	lexicalQuery.Scope.FilesOnly = true
 	lexical, lexicalTruncated, err := searcher.collectLexical(ctx, lexicalQuery)
 	if err != nil {
 		return Report{}, err
