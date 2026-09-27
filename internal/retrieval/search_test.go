@@ -244,6 +244,26 @@ func TestSearcherHybridUsesRRFWithoutComparingRawScores(t *testing.T) {
 	assert.InDelta(t, 2.0/61.0, report.Results[0].Score, 1e-12)
 }
 
+func TestSearcherHybridSkipsLexicalDirectoryNames(t *testing.T) {
+	searcher, backend, _, descriptor := retrievalSearcherFixture(t, true, 1)
+	backend.lexical = []store.ExplainedLexicalCandidate{
+		{Node: store.Node{ID: 4, Kind: "dir", Name: "Documents"},
+			Path: "/Documents", Match: store.SearchMatchName, EvidenceKind: "node_name"},
+		{Node: store.Node{ID: 5, Kind: "file", CurrentVersionID: "file-version", Name: "document.pdf"},
+			Path: "/document.pdf", Match: store.SearchMatchName, EvidenceKind: "node_name"},
+	}
+	report, err := searcher.Search(t.Context(), Query{Text: "document", Mode: ModeHybrid, Limit: 3,
+		ProcessingProfileFingerprint: strings.Repeat("a", 64), BindingID: "required",
+		Authorization: retrievalAuthorization(descriptor)})
+	require.NoError(t, err)
+	assert.Equal(t, ModeHybrid, report.ActualMode)
+	require.Len(t, report.Results, 2)
+	for _, result := range report.Results {
+		assert.NotEmpty(t, result.Document.ContentVersionID)
+		assert.NotEqual(t, int64(4), result.Document.NodeID)
+	}
+}
+
 func TestSearcherHybridCollectsIndependentProfileLaneLimitsBeforeFinalCutoff(t *testing.T) {
 	t.Parallel()
 	searcher, backend, _, descriptor := retrievalSearcherFixture(t, true, 1)
@@ -634,12 +654,20 @@ func retrievalVectorFixture(t *testing.T) (document.EmbeddingDescriptor, *vector
 func (backend *retrievalBackendStub) VaultID() string { return backend.vaultID }
 
 func (backend *retrievalBackendStub) SearchExplainedLexicalCandidates(_ context.Context, _ string, limit, offset int,
-	_ store.SearchOptions,
+	opts store.SearchOptions,
 ) ([]store.ExplainedLexicalCandidate, bool, error) {
 	backend.lexicalCalls++
 	backend.lexicalRequestedLimit = limit
 	backend.lexicalRequestedOffset = offset
 	candidates := backend.lexical
+	if opts.FilesOnly {
+		candidates = make([]store.ExplainedLexicalCandidate, 0, len(backend.lexical))
+		for _, candidate := range backend.lexical {
+			if candidate.Node.CurrentVersionID != "" {
+				candidates = append(candidates, candidate)
+			}
+		}
+	}
 	if offset >= len(candidates) {
 		return []store.ExplainedLexicalCandidate{}, false, nil
 	}

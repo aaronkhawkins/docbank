@@ -236,6 +236,9 @@ type SearchOptions struct {
 	UnderNodeID    int64
 	ModifiedSince  string
 	ModifiedBefore string
+	// FilesOnly is used by hybrid retrieval before the lexical lane limit so
+	// directory-name matches cannot consume document candidate slots.
+	FilesOnly bool
 }
 
 // SearchNeedsQuery reports whether the normalized options leave an empty FTS
@@ -1897,6 +1900,9 @@ func searchFilterSQL(opts SearchOptions) (string, []any) {
 		clauses []string
 		args    []any
 	)
+	if opts.FilesOnly {
+		clauses = append(clauses, `AND n.kind='file'`)
+	}
 	if opts.TagID != "" {
 		clauses = append(clauses, `AND n.id IN (
 			SELECT node_id FROM node_tags WHERE tag_id=?
