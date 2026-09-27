@@ -76,6 +76,7 @@ func configureEmbeddingRuntimes(cfg config.Config, blobs embeddingRuntimeBlobSto
 		case openAIEmbeddingAdapter:
 			profile := openaiembed.Profile{Origin: configured.Runtime.Endpoint, Descriptor: descriptor,
 				ModelInput: modelInput, SecretBinding: configured.CredentialBinding,
+				InputTypeMode:          configured.Runtime.InputTypeMode,
 				DeploymentEpoch:        configured.Runtime.DeploymentEpoch,
 				ProviderRevisionHeader: configured.Runtime.ProviderRevisionHeader,
 				RequestTimeout:         configured.Runtime.RequestTimeout.Std(), MaxBatchItems: configured.MaxBatchItems,

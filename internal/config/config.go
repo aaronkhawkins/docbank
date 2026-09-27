@@ -151,6 +151,7 @@ type EmbeddingRuntimeConfig struct {
 	ModelRevision          string   `toml:"model_revision"`
 	DeploymentEpoch        string   `toml:"deployment_epoch"`
 	ProviderRevisionHeader string   `toml:"provider_revision_header"`
+	InputTypeMode          string   `toml:"input_type_mode"`
 	CapabilityManifest     string   `toml:"capability_manifest"`
 	RequestTimeout         Duration `toml:"request_timeout"`
 	MaxRequestBytes        int64    `toml:"max_request_bytes"`
@@ -691,13 +692,16 @@ func validateEmbeddingProfileConfig(profile EmbeddingProfileConfig, prefix strin
 				(parsed.Path != "" && parsed.Path != "/") || (runtime.DeploymentEpoch == "") == (runtime.ProviderRevisionHeader == "") {
 				return fmt.Errorf("%s OpenAI-compatible runtime authority is invalid", prefix)
 			}
+			if runtime.InputTypeMode != "" && runtime.InputTypeMode != "passage_query" {
+				return fmt.Errorf("%s OpenAI-compatible input_type_mode is invalid", prefix)
+			}
 			if runtime.DeploymentEpoch != "" && runtime.DeploymentEpoch != runtime.ModelRevision {
 				return fmt.Errorf("%s OpenAI-compatible deployment epoch differs from model revision", prefix)
 			}
 		case "docbank-voyage-embeddings/v1":
 			if profile.InputKind != string(document.EmbeddingInputOriginalFile) ||
 				runtime.Endpoint != "https://api.voyageai.com/v1" || runtime.CapabilityManifest == "" ||
-				!filepath.IsAbs(runtime.CapabilityManifest) || runtime.DeploymentEpoch != "" || runtime.ProviderRevisionHeader != "" {
+				!filepath.IsAbs(runtime.CapabilityManifest) || runtime.DeploymentEpoch != "" || runtime.ProviderRevisionHeader != "" || runtime.InputTypeMode != "" {
 				return fmt.Errorf("%s Voyage runtime authority is invalid", prefix)
 			}
 		}

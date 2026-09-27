@@ -306,6 +306,14 @@ func TestEmbeddingRuntimeConfigIsExactBoundedAndPortable(t *testing.T) {
 	}
 	cfg.EmbeddingProfiles["semantic"] = profile
 	require.NoError(t, cfg.Validate())
+	profile.Runtime.InputTypeMode = "passage_query"
+	cfg.EmbeddingProfiles["semantic"] = profile
+	require.NoError(t, cfg.Validate())
+	profile.Runtime.InputTypeMode = "document_query"
+	cfg.EmbeddingProfiles["semantic"] = profile
+	require.ErrorContains(t, cfg.Validate(), "input_type_mode")
+	profile.Runtime.InputTypeMode = ""
+	cfg.EmbeddingProfiles["semantic"] = profile
 	portable, err := cfg.ProcessingProfile("archive")
 	require.NoError(t, err)
 	require.Len(t, portable.Document.Embeddings, 1)
